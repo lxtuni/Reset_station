@@ -1,0 +1,16 @@
+# 虚拟环境：几百 MB，别人用 uv pip install 就能重建
+.venv/
+
+# Python 运行时自动生成的字节码缓存
+__pycache__/
+*.pyc
+
+# MuJoCo 出错时写的日志
+MUJOCO_LOG.TXT
+
+# 本地备份（旧版本都在 git 历史里，不用再存一份）
+_veraltet/
+
+# 以后训练产生的大文件：模型权重、日志、视频
+results/**/*.zip
+results/**/tb/
