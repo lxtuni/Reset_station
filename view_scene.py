@@ -18,7 +18,8 @@ from envs.water import Water
 
 XML = "assets/robotstudio_so101/reset_station.xml"
 EPISODE_S = 15.0                     # 每隔多少秒重新随机一次
-GRASP_R = 0.33                       # 可抓区：桅杆离底座的水平距离 ≤ 0.33 m（图上是 0.37，留 4 cm 余量）
+GRASP_R = 0.30                       # 可抓区：桅杆离底座的水平距离 ≤ 0.30 m（夹爪严格竖直最远约 0.32 m，
+                                     # 见 tests/test_ik.py；reach_map.png 的 0.37 m 允许夹爪斜 20°，偏乐观）
 GRASP_XMIN = 0.14                    #         且在隔板前面（隔板 0.085 + 半个船宽 0.058）
 SEED = int(sys.argv[1]) if len(sys.argv) > 1 else None   # 命令行第 1 个参数当随机种子；没给就是 None（每次不同）
 rng = np.random.default_rng(SEED)    # 随机数生成器：同一个种子 → 同一串随机数

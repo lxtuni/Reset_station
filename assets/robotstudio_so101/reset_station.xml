@@ -49,10 +49,12 @@
     <geom name="water" type="box" pos="0.44 0 -0.10" size="0.50 0.25 0.06" rgba="0.2 0.45 0.8 0.25" contype="0" conaffinity="0"/>
   </worldbody>
 
-  <!-- 初始姿态 home：每回合从这个收拢姿态开始（前墙加长后全 0 姿态也不碰墙，但伸直的手臂不适合当起点）
-       顺序：shoulder_pan shoulder_lift elbow_flex wrist_flex wrist_roll gripper（弧度）；夹爪尖端约在 (0.16, 0, 0.09)
+  <!-- 初始姿态 home：每回合从这个姿态开始；夹爪竖直朝下，尖端在 (0.20, 0, 0.08)，比桅杆顶高约 2.7 cm
+       （10-21 用 envs/ik.py 解出；旧版 "0 -1.2 0.8 1.6" 夹爪斜 21°，每回合开头 IK 要先把它扶正。
+        竖直夹爪在 z = 0.10 已不可达：wrist_flex 顶到 95° 限位，所以取 0.08）
+       顺序：shoulder_pan shoulder_lift elbow_flex wrist_flex wrist_roll gripper（弧度）
        viewer 里：左侧 Simulation → Key 选 0 → Load key -->
   <keyframe>
-    <key name="home" qpos="0 -1.2 0.8 1.6 0 0" ctrl="0 -1.2 0.8 1.6 0 0"/>
+    <key name="home" qpos="-0.0059 -0.3915 0.3740 1.5830 0 0" ctrl="-0.0059 -0.3915 0.3740 1.5830 0 0"/>
   </keyframe>
 </mujoco>
