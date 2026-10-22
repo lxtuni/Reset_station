@@ -34,7 +34,7 @@ def run(policy, n=50, seed=0):
 
 
 rng = np.random.default_rng(0)
-print("2. 随机策略：", run(lambda o: rng.uniform(-1, 1, 3)))
+print("2. 随机策略：", run(lambda o: rng.uniform(-1, 1, 4)))
 print("3. 脚本策略：", run(scripted_action))
 
 env.reset(seed=123)

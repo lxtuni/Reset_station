@@ -4,7 +4,7 @@
 运行（项目根目录，激活 .venv）：
     python tests/view_reach.py            # 脚本策略
     python tests/view_reach.py random     # 随机策略（看看"什么都没学会"是什么样）
-以后训练好了，这里再加一个"加载 SAC 模型"的选项。
+    python tests/view_reach.py results/stage1_reach/sac_seed0/best_model.zip   # 训练好的 SAC 策略
 """
 import os, sys, time
 import numpy as np
@@ -17,7 +17,15 @@ from envs.reset_env import ReachEnv, scripted_action
 mode = sys.argv[1] if len(sys.argv) > 1 else "scripted"
 env = ReachEnv()
 rng = np.random.default_rng()
-policy = scripted_action if mode == "scripted" else (lambda o: rng.uniform(-1, 1, 3))
+if mode == "scripted":
+    policy = scripted_action
+elif mode == "random":
+    policy = lambda o: rng.uniform(-1, 1, 4)
+else:                                                       # 其余参数当作 SB3 模型文件的路径
+    from stable_baselines3 import SAC
+    model = SAC.load(mode)
+    policy = lambda o: model.predict(o, deterministic=True)[0]   # 确定性：直接用网络输出的均值，不加探索噪声
+    mode = "SAC"
 obs, _ = env.reset(seed=int(rng.integers(1_000_000)))
 
 with mujoco.viewer.launch_passive(env.m, env.d) as viewer:
