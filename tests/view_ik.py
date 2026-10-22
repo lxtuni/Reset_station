@@ -30,7 +30,7 @@ ik_step = IK(m, max_iter=3)   # 每个控制步用的快速版：只迭代 3 次
 rng = np.random.default_rng()
 N_PHYS = int(round(0.02 / m.opt.timestep))                  # 一个控制步 = 20 ms = 4 个物理步
 
-tip = d.site_xpos[ik.sid].copy()                            # 当前"指令目标"（每步向真正的目标挪 ≤ 1 cm）
+tip = ik.tcp(d).copy()                            # 当前"指令目标"（每步向真正的目标挪 ≤ 1 cm）
 q_cmd = d.qpos.copy()
 
 
@@ -71,10 +71,10 @@ with mujoco.viewer.launch_passive(m, d) as viewer:
             viewer.user_scn.ngeom = 1
         viewer.sync()
         if time.time() - t_goal > 3.0:
-            real = d.site_xpos[ik.sid]
+            real = ik.tcp(d)
             print(f"   3 s 后实际尖端离目标 {1000*np.linalg.norm(real - goal):.1f} mm")
             goal, ok = new_target(); t_goal = time.time()
-            tip = d.site_xpos[ik.sid].copy(); q_cmd = d.qpos.copy()   # 从实际姿态重新出发
+            tip = ik.tcp(d).copy(); q_cmd = d.qpos.copy()   # 从实际姿态重新出发
         dt = 0.02 - (time.time() - t0)
         if dt > 0:
             time.sleep(dt)

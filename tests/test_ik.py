@@ -47,7 +47,7 @@ while len(targets) < 300:
     mujoco.mj_kinematics(m, probe)
     R = probe.xmat[ik.roll_body].reshape(3, 3)
     a = -(R @ ik.roll_axis)
-    p = probe.site_xpos[ik.sid]
+    p = ik.tcp(probe)
     # 只要夹爪几乎竖直、高度在水面附近、并且在隔板前面（船区，x > 0.085）的姿态。
     # 不加 x 条件时，有约 2 % 的目标在机械臂身后（x < 0），只有"手臂向后折"的另一组解才够得着；从 home 出发的 IK
     # 会走向底座转角 ±110° 的限位，解不到。那片区域是平台和后墙，船去不了，所以不测。
@@ -74,7 +74,7 @@ for lo in np.arange(0.10, 0.46, 0.05):
 ik_fast = IK(m, max_iter=3)                                 # 每个控制步只迭代 3 次
 q = q_home.copy()
 mujoco.mj_kinematics(m, probe); probe.qpos[:] = q; mujoco.mj_kinematics(m, probe)
-p = probe.site_xpos[ik.sid].copy()
+p = ik.tcp(probe).copy()
 path = [p]
 goal = np.array([0.25, 0.10, 0.02])                          # 离底座 0.27 m，在竖直可达范围（≤ 0.32 m）内
 while np.linalg.norm(goal - path[-1]) > 1e-9:               # 从 home 的尖端位置，每步 1 cm 走向 goal
