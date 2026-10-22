@@ -45,6 +45,9 @@ OUT = ("results/" + {"reach": "stage1_reach", "grasp": "stage2_grasp", "drag": "
                      "grasp_res": "stage2_grasp", "drag_res": "stage3_drag", "grasp_res_chain": "stage2_grasp"}[TASK]
        + ("/residual_chain" if TASK.endswith("_chain") else "/residual" if TASK.endswith("_res") else "") + f"/sac_seed{SEED}" + (f"_demo{N_DEMO}" if N_DEMO else ""))
 os.makedirs(OUT, exist_ok=True)
+import json
+json.dump(dict(task=TASK, seed=SEED, total=TOTAL, demo=N_DEMO, start=time.time()),   # 给 train/progress.py 看进度用
+          open(os.path.join(OUT, "run_info.json"), "w"))
 torch.set_num_threads(4)             # 网络很小，线程开多了反而在调度上浪费时间
 
 # 训练用的环境：Monitor 包装器把每个回合的回报、长度和 info 里的 success 记进 monitor.csv
