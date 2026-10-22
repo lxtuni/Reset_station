@@ -1,88 +1,122 @@
-# reset_station：BODY2 复位台（MuJoCo + 强化学习）
+# reset_station
 
-机械臂 SO-101 把漂在水槽里的两栖四足机器人 BODY2 夹住、拖到终点、转到指定朝向、松开。先全部在 MuJoCo 里做，用强化学习训练；以后接真机。
+Automatic reset station for **BODY2**, an amphibious quadruped that swims at the water surface. A low-cost **SO-101** arm
+(LeRobot) grips a mast on BODY2's hull, drags the robot to a fixed pose in the tank, turns its bow to a set heading and lets
+go — so that swimming experiments can run back-to-back without a person resetting the robot by hand.
 
-*A low-cost SO-101 arm resets a floating amphibious quadruped (BODY2) in a 1 m tank: the robot swims into reach, three SAC skills
-(pre-grasp → grasp the mast → drag to the target pose and release) hand over to each other. MuJoCo + Gymnasium + Stable-Baselines3.*
+This repository is the simulation side: a MuJoCo model of the tank, the arm and a stand-in hull, and reinforcement-learning
+policies (SAC) for each step of the reset.
 
-<p align="center"><img src="docs/reset_chain.gif" width="480" alt="完整复位链路：BODY2 游进可抓区，三个 SAC 技能接力完成复位"></p>
-<p align="center"><sub>完整链路（全部是 SAC，种子 2）：游进可抓区 → 预抓取 → 夹住桅杆 → 拖到终点（绿球）并把船头转向 +x → 松开抬起。
-真实速度；用 <code>eval/chain_gif.py</code> 生成。</sub></p>
+自动复位台：SO-101 机械臂夹住两栖四足机器人 BODY2 船体上的桅杆，把它拖到水槽里的固定位置、转到设定朝向后松开，
+让游泳实验可以连续进行、不用人手复位。本仓库是仿真部分。
 
-## 结果（2026-10-22/23）
+<p align="center"><img src="docs/reset_chain.gif" width="480" alt="Full reset: BODY2 swims into reach, then three SAC skills pre-grasp, grasp and drag it to the target pose"></p>
+<p align="center"><sub>One full reset, real time (all three skills are SAC policies). BODY2 swims into reach → pre-grasp → grasp the mast →
+drag to the target (green) and turn the bow to +x → release.</sub></p>
 
-完整链路 = BODY2 游进可抓区（阶段 0，推力代替游泳）→ 阶段 1 预抓取 → 阶段 2 夹住 → 阶段 3 拖到 (0.24, 0)、船头转向 +x、松开抬起。
-`python eval/chain.py ...`，每种 50 回合：
+## Setup
 
-| 阶段 1 / 2 / 3 用的策略 | 静止起点 | 游进来 |
-|---|---|---|
-| 脚本 / 脚本 / 脚本 | 84 % | — |
-| **SAC / SAC / SAC**（阶段 2、3 带 3 万步示范） | 88 % | **98 %** |
-| SAC / 残差 SAC（接力起点训练）/ SAC | **96 %** | 94 % |
-| SAC / 脚本 / SAC | 98 % | 90 % |
+| | |
+|---|---|
+| Tank | 1.0 × 0.5 m, water depth 0.12 m |
+| Arm | SO-101 (5 DoF + gripper, one fixed and one moving jaw), standing on a platform inside the tank, base 4 cm above the water |
+| Fence | across the tank at x = 0.08 m, keeps the hull away from the arm base |
+| BODY2 stand-in | box hull 262 × 116 × 50 mm, 0.5 kg, floating at its natural draft; flat mast 30 × 10 × 60 mm at the centre, gripped top-down |
+| Reach | with the gripper vertical, the mast can be gripped up to about 0.30 m from the arm base, so BODY2 first swims into reach |
+| Target pose | hull centre at (0.24, 0) m, bow pointing +x (away from the arm, so BODY2 can swim straight out) |
+| Water | voxel buoyancy + linear/quadratic drag per hull axis (`envs/water.py`, low-fidelity, coefficients are priors) |
 
-成功回合：总用时约 3–4 s，终点位置误差中位约 10 mm，朝向误差中位 1–2°；松手后 3 s 船还会漂约 4 cm（已知局限，见下）。
+## Method
 
-单个技能（各自的环境，确定性策略 50 回合）：
+The reset is split into skills that hand the full simulator state to each other (`eval/chain.py`):
 
-| 阶段 | 随机 | 脚本 | SAC |
+| Step | Task | Action | Success |
 |---|---|---|---|
-| 1 预抓取（TCP 到桅杆上方 + 转腕对准宽面） | 0 % | 100 %，8 步 | 100 %，8 步（10 万步） |
-| 2 夹住 | — | 100 %，约 26 步 | 纯 SAC 0 % → 加示范 38 % → **修正奖励后 100 %，17 步**（20 万步） |
-| 3 拖动 + 转向 + 松开 | — | 84 %，48 步 | **100 %，36 步**（20 万步，带示范） |
+| 0 | BODY2 swims into reach and brakes | thrust along the bow (stand-in for swimming) | hull at ≤ 0.27 m from the base, speed < 0.5 cm/s |
+| 1 Pre-grasp | gripper above the mast, open, jaws across the mast's 10 mm thickness | TCP Δx Δy Δz (±1 cm), wrist roll (±0.1 rad) | horizontal < 1 cm, height < 1.5 cm, roll error < 10° |
+| 2 Grasp | descend, close, hold | + gripper (±0.1 rad) | both jaws on the mast, gripper stalled, held 0.5 s, hull pushed < 5 cm |
+| 3 Drag | drag to the target pose, turn, release, lift clear | same 5-D action | at release: position < 2 cm, heading < 10°, hull speed < 3 cm/s |
 
-## 这一路上学到的（面试可讲）
+- **Control.** 20 Hz. Position actions move a commanded TCP; a damped-least-squares IK (4 joints, gripper kept vertical,
+  joint-limit clamping; `envs/ik.py`) turns it into joint targets for the servo models. Turning the wrist turns the hull 1 : 1.
+- **Observation.** Only quantities a real setup can measure: joint angles/velocities (servo feedback), TCP pose, BODY2 pose and
+  velocity relative to the target (overhead camera + AprilTag on the hull), gripper command minus position, and in step 3 the hull
+  height deviation and commanded-minus-actual TCP.
+- **TCP.** Placed where an object is actually clamped: 6 mm from the fixed jaw's inner face (half mast thickness + 1 mm), about
+  1 cm above the fingertips. Menagerie's `gripperframe` sits in free space 2 cm in front of the fixed fingertip.
+- **Grip point.** With one fixed and one moving jaw, a floating target is pushed away as soon as the fixed jaw touches it. The
+  grip point therefore moves with the jaw opening: while open, the mast is centred in the gap; as the jaw closes, the arm brings
+  the fixed jaw to the mast (`envs/grasp_env.py::_grip_point`).
+- **Rewards.** Dense distance/heading terms; every per-step term is ≤ 0 and only success is positive. (With positive per-step
+  bonuses for contact and holding, the policy learned to keep holding without ever completing the grasp.)
+- **Training.** SAC (Stable-Baselines3), MLP 256-256, γ = 0.99. Steps 2 and 3 seed the replay buffer with 30 000 transitions from a
+  scripted policy (half of them with action noise). Optionally residual RL: action = scripted + 0.3 × SAC (`envs/residual.py`).
+  Step 2 can start half of its episodes from states where the step-1 policy actually finished (`eval/collect_states.py`).
+- **Carrying the hull.** In step 3 the hull's height deviation is observed and penalised so the arm carries the hull at its natural
+  float height; before opening, the arm is unloaded (commanded TCP = actual TCP).
 
-- **TCP 要放在真正夹东西的地方**：Menagerie 的 `gripperframe` 在固定指尖前 2 cm 的空中；SO-101 一指固定一指转动，东西总被压在固定指上 → TCP = 固定指内表面 + 桅杆半厚 + 1 mm（`envs/ik.py`）。
-- **单侧夹爪 + 漂浮目标**：下降时只要偏向固定指 1 mm 就压在桅杆顶、把船推走 → 夹持点随夹爪开合移动，张开时让桅杆在两指空隙中间（`envs/grasp_env.py::_grip_point`）。
-- **奖励漏洞 (reward hacking)**：阶段 2 原来每步给"碰到 +0.5、夹住 +2"，成功只给一次 +20 且结束回合 → 策略学会"一直夹着不完成"。改成每步都 ≤ 0、只有成功为正，SAC 从 38 % 到 100 %。
-- **示范 + RL**：夹取靠随机探索碰不上；3 万步脚本示范放进 SAC 回放池后能学会，最终比脚本更快。
-- **技能接力的分布偏移**：阶段 2 在"预抓取 + 随机偏差"起点上 96 %，接到阶段 1 的 SAC 后只有 80 % → 一半回合从阶段 1 的真实终点开始训练（`eval/collect_states.py`），链路 96 %。
-- **托着船走**：夹着拖时手臂把船压下/提起 1.5 cm，一松手船弹回、被带出 2–7 cm/s → 船的高度偏差进观测和奖励；松手前把"指令 TCP − 实际 TCP"归零。
-- **物理仿真的 bug 靠能量检查**：浮船会自己翻 —— 原因是 `mj_objectVelocity(..., 1)` 的"局部系"是惯性主轴系不是 body 系，阻力反而注入能量。
+## Results
 
-## 已知局限 / 下一步
+Full reset chain, 50 episodes each (`python eval/chain.py …`):
 
-- 松手后船还会漂 2–7 cm（这个水模型低速阻力很小；真机 BODY2 的腿和尾鳍在水下，阻力应更大，需实测）。
-- 阶段 0 进区后用"主动刹车"（反向划水）—— 假设真机能做到，没测过。
-- 阶段 3 的起点来自脚本夹取的终点；全 SAC 链路静止起点 88 %，失败都在阶段 3（同样的接力分布偏移，下一步用阶段 2 SAC 的终点重训阶段 3）。
-- 每个结果只有 1 个种子；面试报数要补 3 个种子。
-- 还没做：观测噪声 / 延迟 / AprilTag 遮挡（阶段 4）、完整水动力、视频录制、蒸馏成单一策略、ACT/SmolVLA。
+| Policies, steps 1 / 2 / 3 | static start | swim-in start |
+|---|---|---|
+| scripted / scripted / scripted | 84 % | — |
+| SAC / SAC / SAC | 88 % | **98 %** |
+| SAC / residual SAC (hand-over starts) / SAC | **96 %** | 94 % |
+| SAC / scripted / SAC | 98 % | 90 % |
 
-## 场景（2026-10-20）
+Successful resets take 3–4 s (without swimming in); median final error 10 mm and 1–2°.
 
-- 水槽 1 m × 0.5 m，水深 0.12 m；SO-101 立着装在后墙内侧的平台上，底座比水面高 4 cm。
-- 隔板（x = 0.08 m）把机械臂区和船区分开，船进不到平台和底座下面。
-- BODY2 先用盒子代替：船体 0.262 × 0.116 × 0.05 m、0.5 kg，中央一根扁桅杆（3 × 1 × 6 cm）给夹爪从上往下夹；转 `wrist_roll` 可让船原地调头。
-- 夹爪严格竖直时只能在离底座约 0.30 m 内夹桅杆（`tests/test_ik.py`；`docs/reach_map.png` 允许斜 20°，偏乐观），所以复位分两步：BODY2 自己游进可抓区 → 机械臂夹住、定位、调头。
-- 水：`envs/water.py`，体素浮力 + 线性/二次阻力（低保真，系数是先验）。
+Single skills, deterministic policy, 50 episodes:
 
-## 运行
+| Step | random | scripted | SAC |
+|---|---|---|---|
+| 1 Pre-grasp | 0 % | 100 %, 8 steps | 100 %, 8 steps (100 k steps) |
+| 2 Grasp | — | 100 %, ~26 steps | 100 %, 17 steps (200 k steps + 30 k demo steps) |
+| 3 Drag | — | 84 %, 48 steps | 100 %, 36 steps (200 k steps + 30 k demo steps) |
+
+Training curves: `results/stage*/…/curves.png`.
+
+## Limitations
+
+- **Drift after release.** The hull leaves the gripper at 1.5–2.5 cm/s and drifts 2–7 cm in the next 3 s. Measured cause: while
+  clamped, the mast sits 0.6–1.7° off vertical (the moving jaw's face is not parallel to the fixed one at the clamp angle), so the
+  hull is held slightly rolled; on release it rolls back and the roll–sway coupling carries it sideways. The water model's drag at
+  these speeds is small. Being worked on.
+- Step 0's braking assumes BODY2 can paddle backwards; not measured.
+- Step 3 was trained on end states of the scripted grasp; the all-SAC chain from a static start loses its 12 % there.
+- One training seed per result.
+- Not yet modelled: AprilTag noise, latency and occlusion; the full BODY2 hydrodynamics and legs; the real hull and mast.
+
+## Usage
 
 ```bash
 uv venv .venv --python 3.12
 source .venv/bin/activate
 uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 uv pip install mujoco gymnasium stable-baselines3
-python view_scene.py 0
-python eval/chain.py reach=sac grasp=sac drag=sac swim view
+
+python eval/chain.py reach=sac grasp=sac drag=sac swim view    # watch full resets
+python eval/chain.py reach=sac grasp=sac drag=sac swim         # 50-episode statistics
+python train/train_sac.py 200000 0 grasp 30000                 # train step 2 with 30 k demo steps
 ```
 
-WSL 里 viewer 很卡时：`export GALLIUM_DRIVER=d3d12`（让 OpenGL 走显卡）。
+Per step, `scripted`, `sac`, `res` (residual SAC) or `resc` (residual SAC trained on hand-over starts) can be chosen.
+In WSL, `export GALLIUM_DRIVER=d3d12` makes the viewer use the GPU.
 
-## 文件
+## Repository
 
-| 路径 | 内容 |
+| Path | Contents |
 |---|---|
-| `assets/robotstudio_so101/reset_station.xml` | 场景：水槽、平台、隔板、BODY2 替身、home 初始姿态 |
-| `assets/robotstudio_so101/so101.xml` 等 | SO-101 模型，来自 MuJoCo Menagerie（Apache 2.0，见同目录 LICENSE） |
-| `envs/water.py` | 浮力和阻力 |
-| `envs/ik.py` | 阻尼最小二乘 IK（TCP + 夹爪竖直，关节限位夹紧） |
-| `envs/reset_env.py` / `grasp_env.py` / `drag_env.py` | 阶段 1 / 2 / 3 的 Gymnasium 环境 + 各自的脚本策略 |
-| `envs/residual.py`、`envs/state_io.py` | 残差 RL 包装器；环境之间传状态（技能接力） |
-| `train/train_sac.py`、`train/plot_curves.py` | SAC 训练（可加示范、残差）；画训练曲线 |
-| `eval/chain.py`、`eval/chain_frames.py`、`eval/chain_gif.py`、`eval/collect_states.py` | 完整链路评估 / viewer；关键帧截图；GIF；收集接力起点 |
-| `results/` | 链路用到的模型（`best_model.zip`）、训练曲线、评估记录、接力起点；检查点和其余模型不进仓库 |
-| `tests/` | IK、环境的测试和 viewer |
-| `view_scene.py` | 查看场景：BODY2 随机出发、朝可抓区游进来 |
-| `docs/` | 截图（`chain_episode.png` 等）、抓取范围图 |
+| `assets/robotstudio_so101/reset_station.xml` | scene: tank, platform, fence, BODY2 stand-in, home pose |
+| `assets/robotstudio_so101/so101.xml`, `assets/` | SO-101 model from MuJoCo Menagerie (Apache 2.0, see LICENSE there) |
+| `envs/water.py` | buoyancy and drag |
+| `envs/ik.py` | IK and TCP definition |
+| `envs/reset_env.py`, `grasp_env.py`, `drag_env.py` | Gymnasium environments for steps 1–3, each with a scripted reference policy |
+| `envs/residual.py`, `envs/state_io.py` | residual-RL wrapper; state hand-over between skills |
+| `train/` | SAC training (demonstrations, residual), training curves |
+| `eval/` | full-chain evaluation and viewer, key frames, GIF, hand-over start states |
+| `results/` | models used by the chain (`best_model.zip`), curves, evaluation logs, start states |
+| `tests/` | IK and environment tests, viewers |
+| `docs/` | figures |
