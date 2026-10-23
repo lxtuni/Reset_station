@@ -89,9 +89,12 @@ match its velocity, grasp the mast and bring the hull to rest — ideally before
 
 **Environment** (`envs/intercept_env.py`)
 
-- **Spawn.** A target point in the grasp zone and an approach direction (±50° around +x) are drawn first; the start point is
-  back-computed from speed × 1.5–4 s, so slow boats still reach the zone in time. The bow points roughly along the drift (±30°),
-  and the hull starts at least 2 cm from every wall.
+- **Spawn.** A target point in the grasp zone (x 0.24–0.29 m — with the gripper vertical the arm reaches about 0.30 m) and an
+  approach direction (±50° around +x) are drawn first; the start point is back-computed from speed × 1.5–4 s, so slow boats still
+  reach the zone in time. The bow points roughly along the drift (±30°), and the hull starts at least 2 cm from every wall.
+- **Arm control.** As in the reset, actions move a commanded TCP and the IK turns it into servo targets, with three changes:
+  the servo targets ramp linearly over each 50 ms step instead of jumping, the IK uses a backtracking line search, and the
+  commanded TCP is pulled back to what the IK reached when the target is out of reach (anti-windup).
 - **Camera.** The policy only sees the overhead-camera measurement: hull position and heading with Gaussian noise
   (1–3 mm, 0.5–1.5°) and one frame (50 ms) of latency.
 - **Walls.** A wall hit does not end the episode. Restitution is randomized per episode (contact damping ratio 0.3–1.0, measured
@@ -99,7 +102,8 @@ match its velocity, grasp the mast and bring the hull to rest — ideally before
 - **Success.** Mast grasped for 0.5 s, hull off the wall, and hull displacement < 1 cm over that 0.5 s.
 - **Reward.** All per-step terms ≤ 0: distance and heading to the grip point, finger contacts, −1 per step without a grasp,
   relative velocity near the mast, hull tilt while held, −(2 + 100·v) per wall impact at speed v, −1 per step of pressing the
-  held hull against a wall, a penalty for pushing the hull before the grasp; +20 on success.
+  held hull against a wall, a penalty for pushing the hull before the grasp, −0.5·|Δa|² for changing the action between steps;
+  +20 on success.
 
 **Two ways to give the policy the boat's state**
 
@@ -108,25 +112,24 @@ match its velocity, grasp the mast and bring the hull to rest — ideally before
 | **A — Kalman filter** (`envs/kalman.py`) | constant-velocity KF estimate: position, velocity, heading, yaw rate, predicted position at 0.25 / 0.5 / 1 s, time to the next wall. An innovation gate (6 σ) re-opens the velocity uncertainty after a bounce. |
 | **B — raw history** | the last four noisy, delayed camera measurements; the network has to learn filtering and prediction itself |
 
-Both were trained as plain SAC (300 k steps, 30 k scripted demo steps, speed curriculum 3 → 20 cm/s) and as residual SAC
-(scripted interceptor + 0.3 × SAC, camera noise randomized 1–3 mm), three seeds each.
+Both are trained as SAC (300 k steps, 30 k scripted demo steps, speed curriculum 3 → 20 cm/s), three seeds each
+(`results/stage5_intercept/{kf,history}/sac_seed*_demo30000_v4`). Once trained, the network alone controls the arm.
 
 **Results** — 3 seeds × 30 episodes per speed bin, and 3 seeds × 60 episodes per condition at 0–20 cm/s; the KF is configured
-for the actual noise level (`eval/intercept_ab.py --kf-tuned`):
+for the actual noise level (`eval/intercept_ab.py --kf-tuned`). Jitter = mean |Δa|² between consecutive steps.
 
 <p align="center"><img src="docs/intercept_ab.png" width="900" alt="Success rate per speed, time to success, robustness"></p>
 
-| Policy | success, per speed bin | standard / noise ×3 / 3-frame delay | time to success | wall hits per episode at 15–20 cm/s |
-|---|---|---|---|---|
-| scripted interceptor | 97–100 % | 95 / 93 / 92 % | 4.2 s | 0.97 |
-| A, SAC | 92–99 % | 95 / 94 / 96 % | **2.9 s** | **0.29** |
-| B, SAC | 92–98 % | 96 / 98 / 96 % | 3.1 s | 0.44 |
-| A, residual SAC | 97–100 % | 96 / 98 / 98 % | 3.8 s | 0.76 |
-| B, residual SAC | 96–100 % | 98 / 99 / 95 % | 4.2 s | 0.67 |
+| Policy | success, per speed bin | standard / noise ×3 / 3-frame delay | time to success | wall hits per episode at 15–20 cm/s | jitter |
+|---|---|---|---|---|---|
+| scripted interceptor | 100 % | 100 / 98 / 100 % | 4.9 s | 1.03 | 0.07 |
+| A, SAC + Kalman filter | 99–100 % | 100 / 98 / 98 % | **1.8 s** | 0.11 | 0.18 |
+| B, SAC + raw history | 93–100 % | 99 / 99 / 98 % | 2.0 s | **0.04** | 0.18 |
 
-- All policies catch over 90 % of the boats. Plain SAC is about 30 % faster than the scripted interceptor and hits the wall a
-  third as often with fast boats; the residual policies inherit the scripted policy's slow deceleration.
-- A and B are within seed-to-seed variation on this test. A KF configured for the wrong noise level is a real failure mode:
+- SAC catches the boat 2.5× faster than the scripted interceptor and almost never lets a fast boat reach the wall; the scripted
+  policy decelerates the held hull slowly and lets fast boats bounce first.
+- A and B are within seed-to-seed variation (B's 93 % bin is one seed with 26/30). A KF configured for the wrong noise level is
+  a real failure mode:
   with 3 mm noise and the gate still set for 1 mm, the gate fires on ordinary noise and policy A dropped to 2 % while B kept
   48 % (measured with the earlier success test, `results/stage5_intercept/eval_v2_old_success_criterion.json`).
 
@@ -139,6 +142,14 @@ for the actual noise level (`eval/intercept_ab.py --kf-tuned`):
   0.5 s. A hull clamped after a fast catch vibrates in the gripper: it does not move, but its instantaneous speed jumps between
   0 and 9 cm/s, so the counter kept resetting. That one definition turned 90–100 % policies into 60–90 % ones and made plain
   SAC look far worse than residual SAC; measuring displacement instead fixed it.
+- *A jittering arm.* The arm visibly shook. Three causes, found one under the other: (1) no penalty on action changes, so SAC
+  flipped its actions from step to step (8 % of steps); (2) the servo targets jumped every 50 ms, and the SO-101 servo model
+  (kp ≈ 1000, damping ratio ≈ 0.2) overshoots and rings at about 20 Hz after every jump — even a smooth sinusoidal TCP command
+  made the elbow velocity change sign on half of the steps; (3) beyond reach, the IK overshot and alternated between two
+  postures every step, and the grasp zone I had defined extended to x = 0.38 m, beyond the vertical-gripper reach. Fixed by the
+  action-change penalty, target ramping, the IK line search with anti-windup and a reachable grasp zone. Joint acceleration
+  (RMS) of policy A went from 29 to 10 rad/s² (scripted: 7 rad/s²), and every earlier intercept policy had to be retrained.
+  Results before these fixes are in `results/stage5_intercept/eval_before_smoothing/` and in the git history.
 
 ## Limitations
 
@@ -149,8 +160,10 @@ for the actual noise level (`eval/intercept_ab.py --kf-tuned`):
 - Step 0's braking assumes BODY2 can paddle backwards; not measured.
 - Step 3 was trained on end states of the scripted grasp; the all-SAC chain from a static start loses its 12 % there.
 - One training seed per result in the reset chain (the intercept task uses three).
-- The intercept policies were trained with the old success test (instantaneous speed) and evaluated with the new one; they
-  have not been retrained.
+- The intercept task stops once the hull is held still; it is not yet chained to the drag-and-turn step, which was trained
+  with the old arm control (servo targets jumping every 50 ms) and would need retraining.
+- The SAC policies still change their actions about 2.5× more than the scripted interceptor (mostly during the final
+  alignment over the mast).
 - The hull vibrating in the gripper after a fast catch is a simulation result (stiff jaw contact); whether the real gripper
   does the same is not known.
 - Not yet modelled: AprilTag occlusion and dropped frames (noise and latency are modelled in the intercept task); the full
@@ -168,11 +181,10 @@ python eval/chain.py reach=sac grasp=sac drag=sac swim view    # watch full rese
 python eval/chain.py reach=sac grasp=sac drag=sac swim         # 50-episode statistics
 python train/train_sac.py 200000 0 grasp 30000                 # train step 2 with 30 k demo steps
 
-python train/train_sac.py 300000 0 icpt_kf 30000               # intercept, A (Kalman filter); icpt_hist = B
-python train/train_sac.py 300000 0 icpt_kf_res                 # intercept, residual SAC; icpt_hist_res = B
-python eval/intercept_ab.py results/stage5_intercept/kf/sac_seed0_demo30000 --kf-tuned   # per-speed + robustness test
+python train/train_sac.py 300000 0 icpt_kf 30000 _v4           # intercept, A (Kalman filter); icpt_hist = B; last arg = run tag
+python eval/intercept_ab.py results/stage5_intercept/kf/sac_seed0_demo30000_v4 --kf-tuned   # per-speed + robustness test
 python eval/intercept_ab.py scripted --kf-tuned                # same test for the scripted interceptor
-MUJOCO_GL=glfw python eval/intercept_gif.py render 0.15 0.20 7 /tmp/ep.npz model=results/stage5_intercept/kf/sac_seed0_demo30000/best_model.zip
+MUJOCO_GL=glfw python eval/intercept_gif.py render 0.15 0.20 7 /tmp/ep.npz model=results/stage5_intercept/kf/sac_seed0_demo30000_v4/best_model.zip
 ```
 
 Per step, `scripted`, `sac`, `res` (residual SAC) or `resc` (residual SAC trained on hand-over starts) can be chosen.

@@ -43,6 +43,7 @@ TOTAL = int(sys.argv[1]) if len(sys.argv) > 1 else 50_000
 SEED = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 TASK = sys.argv[3] if len(sys.argv) > 3 else "reach"
 N_DEMO = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+TAG = sys.argv[5] if len(sys.argv) > 5 else ""          # 第 5 个参数：版本标签，加在输出目录名后面（例如 _v3），不覆盖旧结果
 Env, scripted = {"reach": (ReachEnv, scripted_action), "grasp": (GraspEnv, scripted_grasp),
                  "drag": (DragEnv, scripted_drag),
                  # 残差版（envs/residual.py）：动作 = 脚本策略 + 0.3 × RL；不需要示范
@@ -61,7 +62,7 @@ OUT = ("results/" + {"reach": "stage1_reach", "grasp": "stage2_grasp", "drag": "
                      "grasp_res": "stage2_grasp", "drag_res": "stage3_drag", "grasp_res_chain": "stage2_grasp",
                      "icpt_kf": "stage5_intercept/kf", "icpt_hist": "stage5_intercept/history",
                      "icpt_kf_res": "stage5_intercept/kf_residual", "icpt_hist_res": "stage5_intercept/history_residual"}[TASK]
-       + ("/residual_chain" if TASK.endswith("_chain") else "/residual" if TASK.endswith("_res") and not TASK.startswith("icpt") else "") + f"/sac_seed{SEED}" + (f"_demo{N_DEMO}" if N_DEMO else ""))
+       + ("/residual_chain" if TASK.endswith("_chain") else "/residual" if TASK.endswith("_res") and not TASK.startswith("icpt") else "") + f"/sac_seed{SEED}" + (f"_demo{N_DEMO}" if N_DEMO else "") + TAG)
 os.makedirs(OUT, exist_ok=True)
 import json
 json.dump(dict(task=TASK, seed=SEED, total=TOTAL, demo=N_DEMO, start=time.time()),   # 给 train/progress.py 看进度用

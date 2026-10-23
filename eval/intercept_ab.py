@@ -25,16 +25,18 @@ def set_cond(e, sigma, lat):
 
 
 def run(model, env, n, seed0=0):
-    S, N, H = [], [], []
+    S, N, H, J = [], [], [], []
     for ep in range(n):
         obs, _ = env.reset(seed=seed0 + ep)
         while True:
             obs, r, t, tr, info = env.step(model.predict(obs, deterministic=True)[0])
+            J.append(info["da2"])
             if t or tr:
                 break
         S.append(info["success"]); N.append(env.steps); H.append(info["wall_hits"])
     S = np.array(S)
-    return dict(succ=int(S.sum()), n=n, steps=float(np.median(np.array(N)[S])) if S.any() else None, walls=float(np.mean(H)))
+    return dict(succ=int(S.sum()), n=n, steps=float(np.median(np.array(N)[S])) if S.any() else None, walls=float(np.mean(H)),
+                jitter=float(np.mean(J)))                     # 平滑度：每步 |Δa|² 的平均（越小越平滑）
 
 
 class Zero:

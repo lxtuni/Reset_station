@@ -8,8 +8,8 @@
 两种观测含有同样的原始信息，区别只在有没有显式的估计和预测。
 
 设计（10-23 定，可行性分析见对话：夹爪跟到约 0.2 m/s 误差还在几毫米；随机方向漂移只有 20–30 % 的轨迹经过可抓区）：
-- 出生：在可抓区里选一个目标点（x 0.24–0.32、y ±0.10）和来的方向（从 +x 方向 ±50°），初速度在 v_range 内随机
-  （默认 0–8 cm/s），按 速度 × 到达时间（1.5–4 s）往回推出生点（限制在 x 0.30–0.80、y ±0.17）；漂移方向对准目标点 ±10°；
+- 出生：在可抓区里选一个目标点（x 0.24–0.29、y ±0.10）和来的方向（从 +x 方向 ±50°），初速度在 v_range 内随机
+  （默认 0–8 cm/s），按 速度 × 到达时间（1.5–4 s）往回推出生点（限制在 x 0.24–0.80、y ±0.17）；漂移方向对准目标点 ±10°；
   船头大致朝运动方向（±30°，慢船随机），船体离墙至少 2 cm，角速度 ±0.1 rad/s。机械臂从 home 出发、夹爪张开。
 - 相机模型：位置噪声 1 mm、朝向噪声 0.5°，延迟 1 帧（50 ms）。
 - 动作 (5,)：同阶段 2：(dx, dy, dz) × 1 cm、d_roll × 0.1 rad、d_grip × 0.1 rad（每步 1 cm = 最快 0.2 m/s）。
@@ -21,6 +21,7 @@
   反弹出可抓区后 BODY2 自己游回来：推力 ≤ 0.3 N，速度 max(初速度, 3 cm/s)，进可抓区后关推力）
   - 1/步（夹着或碰着船时船贴墙）- 20·船速增量（没夹住时手指把船推快）；成功的 0.5 s 静止期内船不能碰墙。
   成功（v3）：连续 0.5 s 夹着、不碰墙，且 0.5 s 内位移 < 1 cm（不看瞬时速度：夹住后船会振动）。
+  - 0.5·|Δa|²（和上一步动作的差，夹爪那一维 ×0.2；v3 加，防止动作每步来回反向）。
   10-23 v2：v1 里撞墙只扣 2，SAC 学会了"夹住后拖船撞隔板当刹车"（静止船也平均撞 1.2 次），所以加重。- 夹住后：10·|高度偏差| + 0.5·|倾角|；成功 +20。
 - 观测里有船的高度偏差和横倾 / 纵倾（10-23）：高速夹住时桅杆在两指间被扭，船被夹成横倾 7–15°，
   浮力要扶正、夹爪不放，船在夹爪下来回振动（竖直速度 ±16 cm/s），船速一直降不到 2 cm/s。
@@ -38,7 +39,10 @@ BOAT_Z_EQ = -0.04 - 0.0168 + 0.025
 HORIZONS = (0.25, 0.5, 1.0)
 WALL_GEOMS = ["tank_wall_back", "tank_wall_front", "tank_wall_yneg", "tank_wall_ypos", "fence", "mount_plate"]
 HOLD_STEPS = 10
-ZONE_LO, ZONE_HI = np.array([0.22, -0.15]), np.array([0.38, 0.15])   # 可抓区（船体中心）：桅杆在手臂够得着、船体放得下的范围
+HOVER_GP = 0.05                      # 脚本拦截器接近时 TCP 在夹持点上方的高度（= 桅杆顶上方 3.5 cm，和阶段 1 一样）。
+                                     # 10-23：曾用 6.5 cm 避免扫到桅杆（当时 z 振荡）；底层振荡修好后降回来，6.5 cm 时 x ≈ 0.30 m 的船竖直够不到
+ZONE_LO, ZONE_HI = np.array([0.22, -0.15]), np.array([0.30, 0.15])   # 可抓区（船体中心）：桅杆在手臂够得着、船体放得下的范围
+                                     # 10-23：x 上限原为 0.38；夹爪竖直、在悬停高度时手臂只够到约 0.30 m
 SWIM_TAU, SWIM_FMAX = 0.3, 0.3                        # 游回可抓区：速度跟踪时间常数 0.3 s，推力上限 0.3 N
 N_HIST = 4
 
@@ -57,6 +61,7 @@ class InterceptEnv(GraspEnv):
         # 10-23：每回合随机相机噪声（例如 (0.001, 0.003)）。KF 按当回合的噪声配置（真机上相机噪声可以标定），
         # 突变门限 = 6 σ（v2 评估里门限固定 6 mm、噪声 3 mm 时 KF 把噪声当成突变，A 方案成功率掉到 2 %）
         self.noise_range = noise_range
+        self.ramp_ctrl = True                                 # 舵机目标在每个控制步内线性过渡（见 step）
         m = self.m
         self.walls = {m.geom(n).id for n in WALL_GEOMS}
         self.boat_mass = float(m.body_subtreemass[self.bid])
@@ -151,10 +156,10 @@ class InterceptEnv(GraspEnv):
             # 出生点按"多久后到达可抓区"倒推（10-23：直接在远端出生时，慢船 10 s 内根本到不了可抓区，任务不可能完成）：
             # 先选可抓区里的目标点和来的方向（大致从 +x 方向来，±50°），再按 速度 × 到达时间（1.5–4 s）往回推
             v = rng.uniform(*self.v_range)
-            tx, ty = rng.uniform(0.24, 0.32), rng.uniform(-0.10, 0.10)   # 10-23：原 x 0.18–0.28 太靠隔板，船头先撞上
+            tx, ty = rng.uniform(0.24, 0.29), rng.uniform(-0.10, 0.10)   # 10-23：0.18–0.28 太靠隔板；> 0.29 竖直够不到
             come = np.radians(rng.uniform(-50, 50))           # 从哪个方向来（0 = 从 +x 来）
             back = max(v * rng.uniform(1.5, 4.0), 0.0)
-            x = float(np.clip(tx + back * np.cos(come), 0.30, 0.80))
+            x = float(np.clip(tx + back * np.cos(come), 0.24, 0.80))   # 下限原为 0.30：静止的船被卡在可达范围外
             y = float(np.clip(ty + back * np.sin(come), -0.17, 0.17))
             ang = np.arctan2(ty - y, tx - x) + np.radians(rng.uniform(-10, 10)) if back > 0.01 else rng.uniform(-np.pi, np.pi)
             # BODY2 是自己游的：船头大致朝运动方向（±30°）；慢船（几乎不动）朝向随机。
@@ -242,16 +247,30 @@ class InterceptEnv(GraspEnv):
         self.grip_cmd = float(np.clip(self.grip_cmd + a[4] * GRIP_STEP, self.grip_lo, GRIP_OPEN))
         self.q_cmd[self.roll_qa] = self.roll_cmd
         self.tcp_cmd = np.clip(self.tcp_cmd + a[:3] * self.step_size, WS_LO, WS_HI)
-        self.q_cmd, _ = self.ik.solve(self.q_cmd, self.tcp_cmd)
+        self.q_cmd, ik_info = self.ik.solve(self.q_cmd, self.tcp_cmd, line_search=True)
+        if ik_info["reason"] == "stalled" and ik_info["err_pos"] > 0.005:
+            # 防积分饱和（anti-windup，10-23）：TCP 目标是动作一步步累加出来的；IK 往哪个方向都不能再接近（够不到）时，
+            # 把它拉回到 IK 实际达到的位置，免得目标越加越远、手臂一直顶在可达边界上。
+            # 只看 "stalled"：手臂快速移动时 3 次迭代没收敛也会有几毫米误差，那时不能拉回
+            self.ik.d.qpos[:] = self.q_cmd
+            self.tcp_cmd = self.ik._fk()[0].copy()
+        ctrl0 = self.d.ctrl.copy()
         self.d.ctrl[self.ik.qadr] = self.q_cmd[self.ik.qadr]
         self.d.ctrl[self.roll_act] = self.roll_cmd
         self.d.ctrl[self.grip_act] = self.grip_cmd
+        ctrl1 = self.d.ctrl.copy()
         collided = wall = False
-        for _ in range(self.n_sub):
+        for i in range(self.n_sub):
+            # 舵机目标在 50 ms 内从旧值线性过渡到新值（10-23 v3）。原来每 50 ms 跳一次：SO-101 的舵机模型欠阻尼
+            # （kp 998、kv 2.7，阻尼比约 0.2，约 20 Hz），每次阶跃都冲过头再弹回，关节速度每步变号，看起来就是抖
+            if self.ramp_ctrl:
+                self.d.ctrl[:] = ctrl0 + (ctrl1 - ctrl0) * (i + 1) / self.n_sub
             self._physics_step()
             collided |= self._arm_collision()
             wall |= self._boat_hits_wall()
         self.steps += 1
+        da = a - self.prev_action                             # 和上一步动作的差（抖动 = 每步来回反向）
+        da2 = float(da[:4] @ da[:4]) + 0.2 * float(da[4] ** 2)  # 夹爪开合本来就是突变，权重小
         self.prev_action = a
         # 相机 → 卡尔曼滤波 / 历史
         z = self._camera()
@@ -282,6 +301,7 @@ class InterceptEnv(GraspEnv):
         success = self.hold >= HOLD_STEPS and moved < 0.01
         reward = (-dist - 0.1 * abs(e) - 0.5 * (2 - f_touch - m_touch) - (0.0 if grasped else 1.0)
                   - (0.5 * rel_v if dist < 0.05 else 0.0) - 0.01 * float(a @ a) - (1.0 if collided else 0.0)
+                  - 0.5 * da2                                         # 动作变化惩罚（10-23 v3：没有它 SAC 学出 10 Hz 来回抖动）
                   - (10.0 * abs(tilt[0]) + 0.5 * float(np.hypot(tilt[1], tilt[2])) if grasped else 0.0)
                   - ((2.0 + 100.0 * self.prev_speed) if impact else 0.0)          # 撞墙：按撞前船速加重（15 cm/s ≈ −17）
                   - (1.0 if wall and (grasped or f_touch or m_touch) else 0.0)     # 夹着 / 碰着船时船贴墙：每步 −1
@@ -293,7 +313,7 @@ class InterceptEnv(GraspEnv):
         info = dict(dist=dist, angle_err_deg=float(np.degrees(e)), grasped=grasped, boat_speed=speed, rel_v=rel_v,
                     wall=impact, wall_hits=self.wall_hits, reaims=self.reaims, collided=collided, success=bool(success), is_success=bool(success),
                     kf_pos_err=float(np.linalg.norm(self.kf.pos - self.d.xpos[self.bid][:2])),
-                    kf_vel_err=float(np.linalg.norm(self.kf.vel - boat_v)), v0=self.v0)
+                    kf_vel_err=float(np.linalg.norm(self.kf.vel - boat_v)), v0=self.v0, da2=da2)
         return self._obs(), reward, terminated, truncated, info
 
 
@@ -320,15 +340,17 @@ def scripted_intercept(obs):
     matched = np.linalg.norm(tcp_v - v) < 0.015               # "同速跟上"：相对速度 < 1.5 cm/s
     aligned = np.linalg.norm(gp_rel[:2]) < 0.008 and abs(e) < np.radians(6)
     closing = q_grip < 0.33
-    a[0:2] = np.clip(aim / 0.02 + ff, -1, 1)
-    a[3] = np.clip(-e / ROLL_STEP + yaw_rate * 0.05 / ROLL_STEP, -1, 1)
+    # 增益（10-23 v3 减半）：每步只补 1/4 的水平误差、1/2 的角度误差。原来补 1/2 和全部，加上相机 1 帧延迟和手臂跟随滞后，
+    # 会冲过头再往回补，动作和关节速度每步反向（10 Hz 抖动），SAC 的示范和残差底子也继承了这个毛病
+    a[0:2] = np.clip(aim / 0.04 + ff, -1, 1)
+    a[3] = np.clip(-0.5 * e / ROLL_STEP + yaw_rate * 0.05 / ROLL_STEP, -1, 1)
     if aligned or closing:
-        a[2] = np.clip(gp_rel[2] / 0.02, -0.6, 0.6)           # 对准了才下降（增益减半，避免 z 振荡）
+        a[2] = np.clip(gp_rel[2] / 0.04, -0.6, 0.6)           # 对准了才下降（每步补 1/4，避免 z 振荡）
         urgent = obs[29] * 5.0 < 0.8                          # 不到 0.8 s 就撞墙：不等同速，够近就合拢
         a[4] = -1.0 if (closing or (np.linalg.norm(gp_rel) < 0.007 and (matched or urgent))) else 1.0   # 同速了才合拢（10-23）
     else:
-        # 没对准：保持在夹持点上方 6.5 cm（= 桅杆顶上方 5 cm）。10-23：原来只高 3.5 cm（桅杆顶上方 2 cm），
+        # 没对准：保持在夹持点上方 HOVER_GP。10-23：最早只高 3.5 cm（桅杆顶上方 2 cm），
         # 张开的活动夹爪最低点在 TCP 下方约 1.75 cm，再加上 z 振荡，接近时会扫到桅杆，把静止的船一下踢到 22 cm/s 撞墙
-        a[2] = np.clip((gp_rel[2] + 0.065) / 0.02, -0.6, 0.6)
+        a[2] = np.clip((gp_rel[2] + HOVER_GP) / 0.04, -0.6, 0.6)
         a[4] = 1.0
     return a

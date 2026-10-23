@@ -63,7 +63,7 @@ class IK:
         a = -(R @ self.roll_axis)                           # 夹爪朝外的方向 = 腕转轴的反方向（模型里的约定）
         return p, a
 
-    def solve(self, qpos, p_target):
+    def solve(self, qpos, p_target, line_search=False):
         """qpos：整个模型当前的 qpos（只读，用作起点）；p_target：尖端目标位置 (3,)。
         返回 (新的 qpos 副本, info)。info 里有 success、迭代次数、最终误差、停止原因。"""
         self.d.qpos[:] = qpos
@@ -93,6 +93,21 @@ class IK:
             if n > self.max_dq:                             # 每步最多转 max_dq 弧度，保持线性近似有效
                 dq *= self.max_dq / n
             q_new = np.clip(q + dq, self.lo, self.hi)       # 关节限位
+            if line_search:
+                # 回溯线搜索（10-23，拦截环境用）：误差没变小就把步长减半。目标够不到时（例如夹爪竖直、x > 0.30 m），
+                # 不加它的话每步都冲过头，关节目标在两个姿态之间来回跳（2 步一循环），机械臂看起来就是抖
+                cost = err_pos ** 2 + (self.w * err_rot) ** 2
+                for _ in range(6):
+                    self.d.qpos[self.qadr] = q_new
+                    p2, a2 = self._fk()
+                    c2 = np.sum((p_target - p2) ** 2) + (self.w * np.arcsin(min(1.0, np.linalg.norm(np.cross(a2, self.a_des))))) ** 2
+                    if c2 < cost:
+                        break
+                    dq *= 0.5
+                    q_new = np.clip(q + dq, self.lo, self.hi)
+                else:
+                    q_new = q                               # 哪个方向都不更好：停在这里（最接近目标的姿态）
+                    self.d.qpos[self.qadr] = q
             if np.linalg.norm(q_new - q) < 1e-6:            # 走不动了：目标够不到或顶到限位
                 return self.d.qpos.copy(), dict(success=False, iters=it, err_pos=err_pos, err_rot=err_rot, reason="stalled")
             q = q_new
