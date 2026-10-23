@@ -59,8 +59,11 @@ def collect_start_states(policy, n, seed=0, out=None):
 
 
 class DragEnv(GraspEnv):
-    def __init__(self, start_states="results/stage3_drag/start_states_scripted.npz", max_steps=200, **kw):
+    def __init__(self, start_states="results/stage3_drag/start_states_scripted.npz", max_steps=200, smooth=False, **kw):
         super().__init__(max_steps=max_steps, **kw)
+        # smooth=True（10-23，拦截 → 拖动转向用）：和拦截环境一样的手臂控制 —— 舵机目标在 50 ms 内线性过渡、IK 线搜索、
+        # 够不到时防积分饱和，奖励里加动作变化惩罚 -0.5·|Δa|²。False = 原来的阶段 3（复位链路里训练好的模型用的就是它）
+        self.smooth = smooth
         S = np.load(start_states)
         self.starts = [{k: S[k][i] for k in STATE_KEYS} for i in range(len(S["qpos"]))]
         self.action_space = spaces.Box(-1.0, 1.0, shape=(5,), dtype=np.float32)
@@ -93,15 +96,24 @@ class DragEnv(GraspEnv):
         self.grip_cmd = float(np.clip(self.grip_cmd + a[4] * 0.1, self.grip_lo, GRIP_OPEN))
         self.q_cmd[self.roll_qa] = self.roll_cmd
         self.tcp_cmd = np.clip(self.tcp_cmd + a[:3] * self.step_size, WS_LO, WS_HI)
-        self.q_cmd, _ = self.ik.solve(self.q_cmd, self.tcp_cmd)
+        self.q_cmd, ik_info = self.ik.solve(self.q_cmd, self.tcp_cmd, line_search=self.smooth)
+        if self.smooth and ik_info["reason"] == "stalled" and ik_info["err_pos"] > 0.005:
+            self.ik.d.qpos[:] = self.q_cmd                    # 防积分饱和：够不到时把 TCP 指令拉回 IK 实际达到的位置
+            self.tcp_cmd = self.ik._fk()[0].copy()
+        ctrl0 = self.d.ctrl.copy()
         self.d.ctrl[self.ik.qadr] = self.q_cmd[self.ik.qadr]
         self.d.ctrl[self.roll_act] = self.roll_cmd
         self.d.ctrl[self.grip_act] = self.grip_cmd
+        ctrl1 = self.d.ctrl.copy()
         collided = False
-        for _ in range(self.n_sub):
+        for i in range(self.n_sub):
+            if self.smooth:                                   # 舵机目标线性过渡（不再每 50 ms 跳一次）
+                self.d.ctrl[:] = ctrl0 + (ctrl1 - ctrl0) * (i + 1) / self.n_sub
             self._physics_step()
             collided |= self._arm_collision()
         self.steps += 1
+        da = a - self.prev_action
+        da2 = float(da[:4] @ da[:4]) + 0.2 * float(da[4] ** 2)
         self.prev_action = a
         pos, yaw = self._errs()
         pos_err = float(np.linalg.norm(pos))
@@ -118,16 +130,26 @@ class DragEnv(GraspEnv):
         success = self.release >= RELEASE_STEPS
         dz = float(self.d.xpos[self.bid][2] - BOAT_Z_EQ)
         reward = -2.0 * pos_err - 0.3 * abs(yaw) - 10.0 * abs(dz) - 0.01 * float(a @ a) - (1.0 if collided else 0.0)
-        if at_target:
+        if self.smooth:
+            # 每步奖励都 <= 0（10-23）：原来"没到终点、夹着 +0.2/步"让 SAC 学会停在终点附近（朝向差 13°，容差 10°）一直夹着领分、
+            # 从不松手。改成：每步 -0.5 的时间压力；到终点后没张开、还碰着桅杆扣分；没到终点就松手照旧扣分
+            reward -= 0.5
+            if at_target:
+                reward -= 0.5 * (1.0 - np.clip(q_grip / GRIP_OPEN, 0, 1)) + (0.5 if touching else 0.0)
+            else:
+                reward -= 0.5 * (not touching)
+        elif at_target:
             reward += 0.5 * np.clip(q_grip / GRIP_OPEN, 0, 1) + (0.5 if not touching else 0.0)
         else:
             reward += 0.2 if grasped else -0.5 * (not touching)
         reward += 20.0 if success else 0.0
+        if self.smooth:
+            reward -= 0.5 * da2                                # 动作变化惩罚（和拦截环境一样）
         terminated = bool(success)
         truncated = self.steps >= self.max_steps
         info = dict(pos_err=pos_err, yaw_err_deg=float(np.degrees(yaw)), grasped=grasped, touching=touching,
                     at_target=at_target, clear=clear, speed=speed, success=bool(success), is_success=bool(success),
-                    collided=collided, dist=pos_err, dz=dz)
+                    collided=collided, dist=pos_err, dz=dz, da2=da2)
         return self._obs(), reward, terminated, truncated, info
 
 
@@ -135,9 +157,13 @@ def scripted_drag(obs):
     """手写策略：夹着拖向终点 + 转腕调朝向；到了就张开夹爪、抬起离开。只看观测。"""
     pos, yaw, dz = obs[30:32], np.arctan2(obs[32], obs[33]), obs[34]
     a = np.zeros(5)
-    settled = abs(dz) < 0.002 and np.linalg.norm(obs[20:22]) < 0.003    # 船回到自然高度、几乎不动
+    # 船回到自然高度、几乎不动，而且不再转（10-23：拦截后要掉头约 180°，朝向误差到 6° 时手腕还在以约 0.7 rad/s 转，
+    # 一松手船带着转动甩出去，松手后船速 4–6 cm/s。夹住时船的角速度 = 转腕角速度 obs[10]）
+    settled = abs(dz) < 0.002 and np.linalg.norm(obs[20:22]) < 0.003 and abs(obs[10]) < 0.05
     at_target = np.linalg.norm(pos) < 0.012 and abs(yaw) < np.radians(6) and settled
-    opening = obs[5] > 0.0                                   # 夹爪实际角度 > 0：已经开始松开了，就继续松
+    # 已经开始松开就继续松（锁定）：夹爪实际角度 > 0，或夹爪指令（= obs[29] + obs[5]）已经离开最小值 -0.175。
+    # 10-23：只看实际角度时，张开的第一步还没真的张开，卸力残差又超过 0.5 mm，就切回"卸力"、夹爪指令被拉回去，来回切换到超时
+    opening = obs[5] > 0.0 or obs[29] + obs[5] > -0.12
     if not at_target and not opening:
         a[0:2] = np.clip(pos / 0.03, -0.5, 0.5)              # TCP 带着桅杆往终点走。增益只用 1/3（误差 / 3 cm）：
                                                               # 用 1（误差 / 1 cm）时，舵机滞后让它在终点附近来回过冲（10-22）

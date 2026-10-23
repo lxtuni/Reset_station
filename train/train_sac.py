@@ -5,6 +5,7 @@
     python train/train_sac.py 50000 1                  # 步数 50000，种子 1
     python train/train_sac.py 200000 0 grasp 20000     # 第 3 个参数选环境：reach / grasp / drag / grasp_res / drag_res /
                                                        #   icpt_kf / icpt_hist（拦截，A / B 方案）/ icpt_kf_res / icpt_hist_res（拦截 + 残差）
+                                                       #   drag_icpt（拦截之后的拖动转向）
                                                        # 第 4 个参数：先放进回放池的示范步数（默认 0 = 纯 RL）
 示范数据（10-22 加）：阶段 2 纯 SAC 训练 9.5 万步成功率一直是 0 %（夹取要"对准 → 慢慢下降 → 合拢"一连串动作，
 随机探索碰不上；乱动碰船又被重罚，于是学成"别靠近"）。做法：训练前用脚本策略跑 N 步，把这些转移 (s, a, r, s', done)
@@ -56,12 +57,16 @@ Env, scripted = {"reach": (ReachEnv, scripted_action), "grasp": (GraspEnv, scrip
                  "icpt_kf": (lambda: InterceptEnv(predictor="kf", v_range=(0.0, V_MAX)), scripted_intercept),
                  "icpt_hist": (lambda: InterceptEnv(predictor="history", v_range=(0.0, V_MAX)), scripted_intercept),
                  # 拦截 + 残差（10-23）：动作 = 脚本拦截器 + 0.3 × SAC；相机噪声每回合 1–3 mm 随机，KF 按当回合噪声配置
+                 # 拦截之后的拖动转向（10-23）：起点 = 拦截成功（夹住、停稳）时的状态，新的手臂控制（舵机目标线性过渡等）
+                 "drag_icpt": (lambda: DragEnv(start_states="results/stage6_intercept_drag/start_states_intercept.npz", smooth=True),
+                               scripted_drag),
                  "icpt_kf_res": (lambda: _icpt_res("kf"), None),
                  "icpt_hist_res": (lambda: _icpt_res("history"), None)}[TASK]
 OUT = ("results/" + {"reach": "stage1_reach", "grasp": "stage2_grasp", "drag": "stage3_drag",
                      "grasp_res": "stage2_grasp", "drag_res": "stage3_drag", "grasp_res_chain": "stage2_grasp",
                      "icpt_kf": "stage5_intercept/kf", "icpt_hist": "stage5_intercept/history",
-                     "icpt_kf_res": "stage5_intercept/kf_residual", "icpt_hist_res": "stage5_intercept/history_residual"}[TASK]
+                     "icpt_kf_res": "stage5_intercept/kf_residual", "icpt_hist_res": "stage5_intercept/history_residual",
+                     "drag_icpt": "stage6_intercept_drag"}[TASK]
        + ("/residual_chain" if TASK.endswith("_chain") else "/residual" if TASK.endswith("_res") and not TASK.startswith("icpt") else "") + f"/sac_seed{SEED}" + (f"_demo{N_DEMO}" if N_DEMO else "") + TAG)
 os.makedirs(OUT, exist_ok=True)
 import json

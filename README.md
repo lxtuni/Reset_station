@@ -133,7 +133,32 @@ for the actual noise level (`eval/intercept_ab.py --kf-tuned`). Jitter = mean |�
   with 3 mm noise and the gate still set for 1 mm, the gate fires on ordinary noise and policy A dropped to 2 % while B kept
   48 % (measured with the earlier success test, `results/stage5_intercept/eval_v2_old_success_criterion.json`).
 
-**What went wrong on the way** (kept as evidence in `results/stage5_intercept/`)
+**Intercept → drag and turn → release**
+
+The intercept ends with the hull held still somewhere in the grasp zone. The drag-and-turn step then brings it to the reset
+pose — hull centre at (0.24, 0), bow to +x — unloads the arm, opens and lifts the gripper. Because BODY2 drifts in bow first,
+it arrives facing the arm: 98 % of the hand-overs need a turn of more than 90° (median 157°), with the 26 cm hull 1–2 cm from
+the fence while it turns. The drag step uses the same arm control as the intercept (`DragEnv(smooth=True)`), starts from 300
+states where the intercept policy succeeded (`eval/collect_intercept_states.py`), and is trained as SAC with 30 k scripted demo
+steps (200 k steps, three seeds; `results/stage6_intercept_drag/`).
+
+<p align="center"><img src="docs/intercept_chain.gif" width="640" alt="Intercept a boat drifting at 20 cm/s, drag it to the target, turn it 160 degrees and release"></p>
+<p align="center"><sub>More episodes: <a href="docs/intercept_chain_static.gif">boat at rest, 55° turn, 2.6 s</a> ·
+<a href="docs/intercept_chain_mid.gif">6.8 cm/s, 171° turn, 3.8 s</a> · <a href="docs/intercept_chain_fast.gif">19.6 cm/s, 158° turn, 5.4 s</a></sub></p>
+
+Full chain, intercept policy A (seed 0), 20 episodes per speed bin (`eval/intercept_chain.py`):
+
+| Drag-and-turn policy | full chain success | time, intercept + drag | distance to target 3 s after release (median / max) |
+|---|---|---|---|
+| scripted | 84 / 120 (70 %) | 3.2–7.0 s | 4.3 / 6.5 cm |
+| SAC, seed 0 | **116 / 120 (97 %)** | 2.5–5.2 s | **2.3** / 5.6 cm |
+| SAC, seed 1 | 115 / 120 (96 %) | 2.5–5.1 s | 2.6 / 5.3 cm |
+| SAC, seed 2 | 84 / 120 (70 %) | 2.6–5.6 s | 3.8 / 7.5 cm |
+
+Seed 2 reached 80 % at 55 k steps, then collapsed to holding the hull forever for 100 k steps and only partly recovered;
+seeds 0 and 1 converged to 100 % in training.
+
+**What went wrong on the way** (kept as evidence in `results/stage5_intercept/` and `results/stage6_intercept_drag/_veraltet/`)
 
 - *Wall as a brake.* With a flat −2 per wall hit, SAC learned to grasp and then slam the hull into the fence corner to stop it
   — 1.2 wall hits per episode even for a boat at rest (`kf/sac_seed0_demo30000_v1_wallhack`). Fixed by the speed-scaled impact
@@ -150,6 +175,13 @@ for the actual noise level (`eval/intercept_ab.py --kf-tuned`). Jitter = mean |�
   action-change penalty, target ramping, the IK line search with anti-windup and a reachable grasp zone. Joint acceleration
   (RMS) of policy A went from 29 to 10 rad/s² (scripted: 7 rad/s²), and every earlier intercept policy had to be retrained.
   Results before these fixes are in `results/stage5_intercept/eval_before_smoothing/` and in the git history.
+- *Releasing a spinning hull.* The scripted drag released as soon as the heading error was below 6°, while the wrist was still
+  turning the hull at about 0.7 rad/s after a 160° turn; the hull spun off at 4–6 cm/s. It now waits until the hull has stopped
+  turning. It also toggled between "open" and "unload" every step and never let go (fixed by latching the release).
+- *Holding for the bonus.* The drag reward of the reset chain paid +0.2 per step for holding the hull before reaching the
+  target. Starting next to the target this never mattered; after a 160° turn one seed learned to stop 13° short of the 10°
+  tolerance and hold forever. With `smooth=True` every per-step term is now ≤ 0 (time penalty, penalties for not opening and
+  still touching the mast at the target).
 
 ## Limitations
 
@@ -160,8 +192,9 @@ for the actual noise level (`eval/intercept_ab.py --kf-tuned`). Jitter = mean |�
 - Step 0's braking assumes BODY2 can paddle backwards; not measured.
 - Step 3 was trained on end states of the scripted grasp; the all-SAC chain from a static start loses its 12 % there.
 - One training seed per result in the reset chain (the intercept task uses three).
-- The intercept task stops once the hull is held still; it is not yet chained to the drag-and-turn step, which was trained
-  with the old arm control (servo targets jumping every 50 ms) and would need retraining.
+- The reset chain of steps 0–3 still uses the old arm control (servo targets jumping every 50 ms); only the intercept chain
+  uses the smoothed control.
+- Drift after release is reduced but not solved in the intercept chain: median 2.3 cm, up to 5.6 cm, 3 s after release.
 - The SAC policies still change their actions about 2.5× more than the scripted interceptor (mostly during the final
   alignment over the mast).
 - The hull vibrating in the gripper after a fast catch is a simulation result (stiff jaw contact); whether the real gripper
@@ -185,6 +218,11 @@ python train/train_sac.py 300000 0 icpt_kf 30000 _v4           # intercept, A (K
 python eval/intercept_ab.py results/stage5_intercept/kf/sac_seed0_demo30000_v4 --kf-tuned   # per-speed + robustness test
 python eval/intercept_ab.py scripted --kf-tuned                # same test for the scripted interceptor
 MUJOCO_GL=glfw python eval/intercept_gif.py render 0.15 0.20 7 /tmp/ep.npz model=results/stage5_intercept/kf/sac_seed0_demo30000_v4/best_model.zip
+
+python eval/collect_intercept_states.py results/stage5_intercept/kf/sac_seed0_demo30000_v4 300 results/stage6_intercept_drag/start_states_intercept.npz
+python train/train_sac.py 200000 0 drag_icpt 30000             # drag and turn after the intercept
+python eval/intercept_chain.py drag=results/stage6_intercept_drag/sac_seed0_demo30000   # full chain (drag=scripted for the script)
+MUJOCO_GL=glfw python eval/intercept_chain_gif.py render 0.15 0.20 7 /tmp/chain.npz drag=results/stage6_intercept_drag/sac_seed0_demo30000
 ```
 
 Per step, `scripted`, `sac`, `res` (residual SAC) or `resc` (residual SAC trained on hand-over starts) can be chosen.
@@ -202,7 +240,7 @@ In WSL, `export GALLIUM_DRIVER=d3d12` makes the viewer use the GPU.
 | `envs/residual.py`, `envs/state_io.py` | residual-RL wrapper; state hand-over between skills |
 | `envs/intercept_env.py`, `envs/kalman.py` | intercept task (camera noise, latency, wall bounce, swim-back) with scripted interceptor; boat Kalman filter |
 | `train/` | SAC training (demonstrations, residual), training curves |
-| `eval/` | full-chain evaluation and viewer, key frames, GIF, hand-over start states; intercept evaluation (`intercept_*.py`), debug GIFs, comparison plot |
+| `eval/` | full-chain evaluation and viewer, key frames, GIF, hand-over start states; intercept evaluation (`intercept_*.py`), intercept → drag chain (`intercept_chain*.py`, `collect_intercept_states.py`), debug GIFs, comparison plot |
 | `results/` | models used by the chain (`best_model.zip`), curves, evaluation logs, start states |
 | `tests/` | IK and environment tests, viewers |
 | `docs/` | figures |
