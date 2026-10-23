@@ -4,7 +4,7 @@
     python train/train_sac.py                          # 默认：reach，5 万步，种子 0
     python train/train_sac.py 50000 1                  # 步数 50000，种子 1
     python train/train_sac.py 200000 0 grasp 20000     # 第 3 个参数选环境：reach / grasp / drag / grasp_res / drag_res /
-                                                       #   icpt_kf / icpt_hist（拦截，A / B 方案）
+                                                       #   icpt_kf / icpt_hist（拦截，A / B 方案）/ icpt_kf_res / icpt_hist_res（拦截 + 残差）
                                                        # 第 4 个参数：先放进回放池的示范步数（默认 0 = 纯 RL）
 示范数据（10-22 加）：阶段 2 纯 SAC 训练 9.5 万步成功率一直是 0 %（夹取要"对准 → 慢慢下降 → 合拢"一连串动作，
 随机探索碰不上；乱动碰船又被重罚，于是学成"别靠近"）。做法：训练前用脚本策略跑 N 步，把这些转移 (s, a, r, s', done)
@@ -34,6 +34,11 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 V_MAX = 0.20                         # 拦截任务：船初速度上限 20 cm/s（BODY2 实测巡航约 0.2 m/s）
 
+def _icpt_res(pred):
+    e = InterceptEnv(predictor=pred, v_range=(0.0, V_MAX), noise_range=(0.001, 0.003))
+    return ResidualWrapper(e, lambda obs: scripted_intercept(e.kf_obs()))   # 脚本拦截器总是看后台 KF 的观测（B 方案也一样）
+
+
 TOTAL = int(sys.argv[1]) if len(sys.argv) > 1 else 50_000
 SEED = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 TASK = sys.argv[3] if len(sys.argv) > 3 else "reach"
@@ -48,11 +53,15 @@ Env, scripted = {"reach": (ReachEnv, scripted_action), "grasp": (GraspEnv, scrip
                                                             scripted_grasp), None),
                  # 拦截（envs/intercept_env.py）：A = 卡尔曼滤波预测进观测；B = 只给最近 4 帧原始测量，网络自己学
                  "icpt_kf": (lambda: InterceptEnv(predictor="kf", v_range=(0.0, V_MAX)), scripted_intercept),
-                 "icpt_hist": (lambda: InterceptEnv(predictor="history", v_range=(0.0, V_MAX)), scripted_intercept)}[TASK]
+                 "icpt_hist": (lambda: InterceptEnv(predictor="history", v_range=(0.0, V_MAX)), scripted_intercept),
+                 # 拦截 + 残差（10-23）：动作 = 脚本拦截器 + 0.3 × SAC；相机噪声每回合 1–3 mm 随机，KF 按当回合噪声配置
+                 "icpt_kf_res": (lambda: _icpt_res("kf"), None),
+                 "icpt_hist_res": (lambda: _icpt_res("history"), None)}[TASK]
 OUT = ("results/" + {"reach": "stage1_reach", "grasp": "stage2_grasp", "drag": "stage3_drag",
                      "grasp_res": "stage2_grasp", "drag_res": "stage3_drag", "grasp_res_chain": "stage2_grasp",
-                     "icpt_kf": "stage5_intercept/kf", "icpt_hist": "stage5_intercept/history"}[TASK]
-       + ("/residual_chain" if TASK.endswith("_chain") else "/residual" if TASK.endswith("_res") else "") + f"/sac_seed{SEED}" + (f"_demo{N_DEMO}" if N_DEMO else ""))
+                     "icpt_kf": "stage5_intercept/kf", "icpt_hist": "stage5_intercept/history",
+                     "icpt_kf_res": "stage5_intercept/kf_residual", "icpt_hist_res": "stage5_intercept/history_residual"}[TASK]
+       + ("/residual_chain" if TASK.endswith("_chain") else "/residual" if TASK.endswith("_res") and not TASK.startswith("icpt") else "") + f"/sac_seed{SEED}" + (f"_demo{N_DEMO}" if N_DEMO else ""))
 os.makedirs(OUT, exist_ok=True)
 import json
 json.dump(dict(task=TASK, seed=SEED, total=TOTAL, demo=N_DEMO, start=time.time()),   # 给 train/progress.py 看进度用
@@ -107,7 +116,7 @@ class SpeedCurriculum(BaseCallback):
     评估环境一直用完整的 0–V_MAX，看到的是"真实水平"。"""
     def _on_step(self):
         frac = min(self.num_timesteps / (0.6 * TOTAL), 1.0)
-        train_env.env.v_range = (0.0, 0.03 + frac * (V_MAX - 0.03))
+        train_env.unwrapped.v_range = (0.0, 0.03 + frac * (V_MAX - 0.03))   # unwrapped：残差包装器不会把属性赋值传进去
         return True
 
 
@@ -127,7 +136,7 @@ print(f"训练完成：{TOTAL} 步，用时 {dt/60:.1f} 分钟（{TOTAL/dt:.0f} 
 if TASK.startswith("icpt"):                           # 拦截：按船速分档评估，每档 30 回合，和脚本拦截器同一批种子
     env = Env()
     for vr in [(0.0, 0.0), (0.0, 0.03), (0.03, 0.06), (0.06, 0.10), (0.10, 0.15), (0.15, 0.20)]:
-        env.v_range = vr; S, N, H = [], [], []
+        env.unwrapped.v_range = vr; S, N, H = [], [], []
         for ep in range(30):
             obs, _ = env.reset(seed=ep)
             while True:

@@ -20,6 +20,7 @@
   - 1（机械臂撞缸壁 / 隔板 / 平台 / 船体）- (2 + 100·撞前船速)（船每撞一次墙，不结束回合，船反弹后继续；
   反弹出可抓区后 BODY2 自己游回来：推力 ≤ 0.3 N，速度 max(初速度, 3 cm/s)，进可抓区后关推力）
   - 1/步（夹着或碰着船时船贴墙）- 20·船速增量（没夹住时手指把船推快）；成功的 0.5 s 静止期内船不能碰墙。
+  成功（v3）：连续 0.5 s 夹着、不碰墙，且 0.5 s 内位移 < 1 cm（不看瞬时速度：夹住后船会振动）。
   10-23 v2：v1 里撞墙只扣 2，SAC 学会了"夹住后拖船撞隔板当刹车"（静止船也平均撞 1.2 次），所以加重。- 夹住后：10·|高度偏差| + 0.5·|倾角|；成功 +20。
 - 观测里有船的高度偏差和横倾 / 纵倾（10-23）：高速夹住时桅杆在两指间被扭，船被夹成横倾 7–15°，
   浮力要扶正、夹爪不放，船在夹爪下来回振动（竖直速度 ±16 cm/s），船速一直降不到 2 cm/s。
@@ -49,10 +50,13 @@ def _hull_extent(yaw):
 
 
 class InterceptEnv(GraspEnv):
-    def __init__(self, predictor="kf", v_range=(0.0, 0.08), max_steps=200, noise=True, latency=1, **kw):
+    def __init__(self, predictor="kf", v_range=(0.0, 0.08), max_steps=200, noise=True, latency=1, noise_range=None, **kw):
         super().__init__(max_steps=max_steps, **kw)
         self.predictor, self.v_range, self.noise, self.latency = predictor, v_range, noise, latency
         self.sigma_pos, self.sigma_yaw = 0.001, np.radians(0.5)   # 相机测量噪声（AprilTag：1 mm、0.5°）；评估抗干扰时可以调大
+        # 10-23：每回合随机相机噪声（例如 (0.001, 0.003)）。KF 按当回合的噪声配置（真机上相机噪声可以标定），
+        # 突变门限 = 6 σ（v2 评估里门限固定 6 mm、噪声 3 mm 时 KF 把噪声当成突变，A 方案成功率掉到 2 %）
+        self.noise_range = noise_range
         m = self.m
         self.walls = {m.geom(n).id for n in WALL_GEOMS}
         self.boat_mass = float(m.body_subtreemass[self.bid])
@@ -173,6 +177,10 @@ class InterceptEnv(GraspEnv):
         self.swim_target = None; self.swim_speed = 0.0; self.reaims = 0
         self.q_cmd = e.d.qpos.copy(); self.tcp_cmd = self.ik.tcp(e.d).copy(); self.roll_cmd = float(e.d.qpos[e.roll_qa])
         self.grip_cmd = GRIP_OPEN
+        if self.noise_range is not None:
+            self.sigma_pos = float(rng.uniform(*self.noise_range))
+            self.sigma_yaw = np.radians(0.5) * self.sigma_pos / 0.001
+            self.kf = BoatKF(sigma_pos=self.sigma_pos, sigma_yaw=self.sigma_yaw, gate=6 * self.sigma_pos)
         self.meas_q = deque(maxlen=self.latency + 1)
         for _ in range(self.latency + 1):
             self.meas_q.append(self._measure())
@@ -180,6 +188,7 @@ class InterceptEnv(GraspEnv):
         self.kf.reset(p0, y0)
         self.hist = deque([(p0, y0)] * N_HIST, maxlen=N_HIST)
         self.hold = 0; self.steps = 0; self.prev_action = np.zeros(5)
+        self.pos_hist = deque(maxlen=HOLD_STEPS + 1)          # 最近 0.5 s 船的位置（判断"停稳"用位移，不用瞬时速度）
         self.prev_tcp = self.ik.tcp(e.d).copy()
         self.boat_xy0 = e.d.xpos[e.bid][:2].copy()
         self.v0 = v
@@ -264,8 +273,13 @@ class InterceptEnv(GraspEnv):
         self.in_wall = wall
         self.wall_hits += int(impact)
         self._update_swim(touched=bool(f_touch or m_touch))
-        self.hold = self.hold + 1 if (grasped and speed < 0.02 and not wall) else 0   # 10-23：靠着墙停下不算
-        success = self.hold >= HOLD_STEPS
+        # 停稳 = 连续 0.5 s 夹着、不碰墙，且这 0.5 s 内船的位移 < 1 cm（平均速度 < 2 cm/s）。
+        # 10-23 v3：原来要求每一步瞬时速度 < 2 cm/s；快船夹住后船在夹爪里振动，位置几乎不动但瞬时速度在 0–9 cm/s 乱跳，
+        # 计数一再归零（残差 SAC 在 15–20 cm/s 档的失败几乎都是这个）。靠着墙停下仍然不算。
+        self.pos_hist.append(self.d.xpos[self.bid][:2].copy())
+        self.hold = self.hold + 1 if (grasped and not wall) else 0
+        moved = float(np.linalg.norm(self.pos_hist[-1] - self.pos_hist[0])) if len(self.pos_hist) > HOLD_STEPS else 1.0
+        success = self.hold >= HOLD_STEPS and moved < 0.01
         reward = (-dist - 0.1 * abs(e) - 0.5 * (2 - f_touch - m_touch) - (0.0 if grasped else 1.0)
                   - (0.5 * rel_v if dist < 0.05 else 0.0) - 0.01 * float(a @ a) - (1.0 if collided else 0.0)
                   - (10.0 * abs(tilt[0]) + 0.5 * float(np.hypot(tilt[1], tilt[2])) if grasped else 0.0)

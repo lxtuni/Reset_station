@@ -1,0 +1,194 @@
+Eval num_timesteps=5000, episode_reward=-143.56 +/- 76.98
+Episode length: 163.00 +/- 37.97
+Success rate: 75.00%
+New best mean reward!
+Eval num_timesteps=10000, episode_reward=-161.57 +/- 100.72
+Episode length: 147.45 +/- 37.81
+Success rate: 80.00%
+Eval num_timesteps=15000, episode_reward=-181.53 +/- 102.07
+Episode length: 178.95 +/- 40.46
+Success rate: 25.00%
+Eval num_timesteps=20000, episode_reward=-140.43 +/- 81.23
+Episode length: 171.20 +/- 42.32
+Success rate: 45.00%
+New best mean reward!
+Eval num_timesteps=25000, episode_reward=-174.71 +/- 86.78
+Episode length: 192.55 +/- 26.75
+Success rate: 10.00%
+Eval num_timesteps=30000, episode_reward=-125.27 +/- 53.90
+Episode length: 193.75 +/- 17.50
+Success rate: 15.00%
+New best mean reward!
+Eval num_timesteps=35000, episode_reward=-156.11 +/- 80.92
+Episode length: 179.15 +/- 34.06
+Success rate: 35.00%
+Eval num_timesteps=40000, episode_reward=-151.66 +/- 89.74
+Episode length: 180.45 +/- 30.93
+Success rate: 40.00%
+Eval num_timesteps=45000, episode_reward=-130.26 +/- 66.80
+Episode length: 179.10 +/- 33.76
+Success rate: 30.00%
+Eval num_timesteps=50000, episode_reward=-138.31 +/- 65.81
+Episode length: 164.70 +/- 36.96
+Success rate: 60.00%
+Eval num_timesteps=55000, episode_reward=-150.90 +/- 100.14
+Episode length: 192.45 +/- 18.71
+Success rate: 20.00%
+Eval num_timesteps=60000, episode_reward=-122.67 +/- 84.80
+Episode length: 132.55 +/- 38.07
+Success rate: 85.00%
+New best mean reward!
+Eval num_timesteps=65000, episode_reward=-123.46 +/- 69.22
+Episode length: 182.70 +/- 36.38
+Success rate: 35.00%
+Eval num_timesteps=70000, episode_reward=-167.02 +/- 98.35
+Episode length: 171.15 +/- 38.14
+Success rate: 50.00%
+Eval num_timesteps=75000, episode_reward=-164.96 +/- 78.42
+Episode length: 169.25 +/- 33.33
+Success rate: 60.00%
+Eval num_timesteps=80000, episode_reward=-133.71 +/- 99.84
+Episode length: 155.95 +/- 42.22
+Success rate: 55.00%
+Eval num_timesteps=85000, episode_reward=-131.64 +/- 82.31
+Episode length: 153.00 +/- 45.82
+Success rate: 70.00%
+Eval num_timesteps=90000, episode_reward=-133.42 +/- 67.31
+Episode length: 155.05 +/- 29.42
+Success rate: 85.00%
+Eval num_timesteps=95000, episode_reward=-144.96 +/- 110.85
+Episode length: 163.45 +/- 37.37
+Success rate: 70.00%
+Eval num_timesteps=100000, episode_reward=-122.20 +/- 73.55
+Episode length: 162.70 +/- 37.27
+Success rate: 70.00%
+New best mean reward!
+Eval num_timesteps=105000, episode_reward=-144.33 +/- 102.06
+Episode length: 167.75 +/- 37.03
+Success rate: 60.00%
+Eval num_timesteps=110000, episode_reward=-136.71 +/- 85.76
+Episode length: 174.50 +/- 38.64
+Success rate: 60.00%
+Eval num_timesteps=115000, episode_reward=-93.85 +/- 51.37
+Episode length: 128.20 +/- 47.45
+Success rate: 80.00%
+New best mean reward!
+Eval num_timesteps=120000, episode_reward=-136.38 +/- 65.70
+Episode length: 178.35 +/- 29.57
+Success rate: 55.00%
+Eval num_timesteps=125000, episode_reward=-117.56 +/- 80.95
+Episode length: 147.10 +/- 40.67
+Success rate: 75.00%
+Eval num_timesteps=130000, episode_reward=-129.44 +/- 72.77
+Episode length: 148.75 +/- 35.62
+Success rate: 80.00%
+Eval num_timesteps=135000, episode_reward=-151.98 +/- 79.33
+Episode length: 164.05 +/- 48.30
+Success rate: 50.00%
+Eval num_timesteps=140000, episode_reward=-127.23 +/- 76.03
+Episode length: 136.00 +/- 42.83
+Success rate: 90.00%
+Eval num_timesteps=145000, episode_reward=-136.84 +/- 65.26
+Episode length: 159.80 +/- 42.86
+Success rate: 70.00%
+Eval num_timesteps=150000, episode_reward=-129.31 +/- 87.28
+Episode length: 139.40 +/- 45.14
+Success rate: 80.00%
+Eval num_timesteps=155000, episode_reward=-184.63 +/- 128.85
+Episode length: 157.95 +/- 48.38
+Success rate: 50.00%
+Eval num_timesteps=160000, episode_reward=-147.32 +/- 135.82
+Episode length: 183.65 +/- 34.94
+Success rate: 30.00%
+Eval num_timesteps=165000, episode_reward=-109.41 +/- 75.02
+Episode length: 136.80 +/- 44.09
+Success rate: 85.00%
+Eval num_timesteps=170000, episode_reward=-129.11 +/- 84.76
+Episode length: 128.90 +/- 41.83
+Success rate: 85.00%
+Eval num_timesteps=175000, episode_reward=-110.43 +/- 57.23
+Episode length: 128.90 +/- 45.36
+Success rate: 85.00%
+Eval num_timesteps=180000, episode_reward=-128.30 +/- 41.17
+Episode length: 158.50 +/- 36.40
+Success rate: 65.00%
+Eval num_timesteps=185000, episode_reward=-89.72 +/- 51.43
+Episode length: 122.45 +/- 40.20
+Success rate: 95.00%
+New best mean reward!
+Eval num_timesteps=190000, episode_reward=-151.89 +/- 85.57
+Episode length: 152.60 +/- 44.41
+Success rate: 80.00%
+Eval num_timesteps=195000, episode_reward=-111.39 +/- 55.40
+Episode length: 152.45 +/- 35.80
+Success rate: 80.00%
+Eval num_timesteps=200000, episode_reward=-117.28 +/- 46.18
+Episode length: 134.10 +/- 41.22
+Success rate: 90.00%
+Eval num_timesteps=205000, episode_reward=-117.25 +/- 72.93
+Episode length: 135.30 +/- 48.91
+Success rate: 85.00%
+Eval num_timesteps=210000, episode_reward=-115.04 +/- 54.68
+Episode length: 123.45 +/- 39.00
+Success rate: 90.00%
+Eval num_timesteps=215000, episode_reward=-103.80 +/- 54.07
+Episode length: 153.75 +/- 37.59
+Success rate: 80.00%
+Eval num_timesteps=220000, episode_reward=-131.62 +/- 70.40
+Episode length: 132.35 +/- 36.21
+Success rate: 90.00%
+Eval num_timesteps=225000, episode_reward=-112.21 +/- 51.45
+Episode length: 132.15 +/- 44.56
+Success rate: 85.00%
+Eval num_timesteps=230000, episode_reward=-125.13 +/- 59.71
+Episode length: 151.05 +/- 43.05
+Success rate: 70.00%
+Eval num_timesteps=235000, episode_reward=-99.72 +/- 60.95
+Episode length: 150.15 +/- 49.86
+Success rate: 60.00%
+Eval num_timesteps=240000, episode_reward=-103.29 +/- 51.44
+Episode length: 129.20 +/- 39.39
+Success rate: 95.00%
+Eval num_timesteps=245000, episode_reward=-162.29 +/- 180.48
+Episode length: 144.85 +/- 50.68
+Success rate: 65.00%
+Eval num_timesteps=250000, episode_reward=-110.04 +/- 71.12
+Episode length: 121.50 +/- 42.68
+Success rate: 90.00%
+Eval num_timesteps=255000, episode_reward=-145.92 +/- 115.02
+Episode length: 139.55 +/- 36.51
+Success rate: 80.00%
+Eval num_timesteps=260000, episode_reward=-109.42 +/- 66.64
+Episode length: 116.65 +/- 36.11
+Success rate: 95.00%
+Eval num_timesteps=265000, episode_reward=-95.75 +/- 49.82
+Episode length: 119.95 +/- 42.94
+Success rate: 95.00%
+Eval num_timesteps=270000, episode_reward=-109.10 +/- 41.79
+Episode length: 141.65 +/- 40.11
+Success rate: 80.00%
+Eval num_timesteps=275000, episode_reward=-109.22 +/- 62.19
+Episode length: 118.20 +/- 42.14
+Success rate: 95.00%
+Eval num_timesteps=280000, episode_reward=-113.10 +/- 75.73
+Episode length: 154.70 +/- 44.26
+Success rate: 75.00%
+Eval num_timesteps=285000, episode_reward=-102.16 +/- 56.42
+Episode length: 136.40 +/- 35.59
+Success rate: 95.00%
+Eval num_timesteps=290000, episode_reward=-115.66 +/- 60.42
+Episode length: 147.50 +/- 37.58
+Success rate: 75.00%
+Eval num_timesteps=295000, episode_reward=-114.14 +/- 53.95
+Episode length: 144.95 +/- 33.80
+Success rate: 90.00%
+Eval num_timesteps=300000, episode_reward=-111.70 +/- 82.25
+Episode length: 113.85 +/- 36.69
+Success rate: 95.00%
+训练完成：300000 步，用时 115.5 分钟（43 步/秒），结果在 results/stage5_intercept/kf_residual/sac_seed1/
+船速 0–0 cm/s：成功 29/30 | 成功时步数 中位 93 | 平均撞墙 0.00 次
+船速 0–3 cm/s：成功 30/30 | 成功时步数 中位 105 | 平均撞墙 0.17 次
+船速 3–6 cm/s：成功 30/30 | 成功时步数 中位 114 | 平均撞墙 0.00 次
+船速 6–10 cm/s：成功 29/30 | 成功时步数 中位 122 | 平均撞墙 0.03 次
+船速 10–15 cm/s：成功 27/30 | 成功时步数 中位 121 | 平均撞墙 0.10 次
+船速 15–20 cm/s：成功 24/30 | 成功时步数 中位 131 | 平均撞墙 1.17 次
