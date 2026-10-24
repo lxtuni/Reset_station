@@ -17,6 +17,7 @@ rd, n, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 seed0 = int(sys.argv[4]) if len(sys.argv) > 4 else 50_000           # 和评估用的种子（0–1059）错开
 model = SAC.load(os.path.join(rd, "best_model.zip"))
 env = InterceptEnv(predictor="history" if "history" in rd else "kf", v_range=(0.0, 0.20))
+env.block_outward = "stage8" in rd or "stage9" in rd     # 只有 stage8 之后训练的模型用"边界处不往外推"
 states, ep = [], 0
 while len(states) < n:
     obs, _ = env.reset(seed=seed0 + ep); ep += 1

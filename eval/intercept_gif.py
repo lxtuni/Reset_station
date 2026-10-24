@@ -15,8 +15,15 @@ if sys.argv[1] == "render":
     mp = [x[6:] for x in sys.argv if x.startswith("model=")]
     from stable_baselines3 import SAC
     model = SAC.load(mp[0]) if mp else None
-    env = InterceptEnv(predictor="history" if mp and "history" in mp[0] else "kf", v_range=(vlo, vhi))
+    occl = "occl" in sys.argv or (bool(mp) and "occl" in mp[0])        # 模型目录带 occl / wrist 就打开对应的传感器
+    wrist = "wrist" in sys.argv or (bool(mp) and "occl_wrist" in mp[0])   # 实验目录叫 stage7_wrist，要看 occl_wrist
+    s8 = bool(mp) and "stage8" in mp[0]                      # stage8：两个标签 + 动作低通滤波 0.6；stage7：一个标签、不滤波
+    env = InterceptEnv(predictor="history" if mp and "history" in mp[0] else "kf", v_range=(vlo, vhi), occlusion=occl, wrist=wrist,
+                       two_tags=not (bool(mp) and "stage7" in mp[0]), action_filter=0.8 if (bool(mp) and "stage9" in mp[0]) else (0.6 if s8 or "filter" in sys.argv else 0.0))
+    env.block_outward = s8 or (bool(mp) and "stage9" in mp[0]) or not mp   # 只有 stage8 之后训练的模型（和脚本）用"边界处不往外推"
     from envs.residual import SCALE
+    from envs.intercept_env import TAG_LOCALS, TAG_HALF
+    # 遮挡打开时，AprilTag 画成绿（看得到）/ 红（被挡）；腕部相机有读数时文字里显示
     residual = bool(mp) and "residual" in mp[0]               # 残差模型：动作 = 脚本拦截器 + SCALE × SAC（和训练时一样）
     m, d = env.m, env.d
     nm = lambda g: m.geom(g).name or m.body(m.geom_bodyid[g]).name
@@ -51,11 +58,20 @@ if sys.argv[1] == "render":
         imgs = []
         for cam in (side, top):
             r.update_scene(d, cam, opt)
+            if env.occlusion:                                 # 每个 AprilTag：绿 = 顶部相机看得到，红 = 被机械臂挡住
+                sc = r.scene; R = d.xmat[env.bid].reshape(3, 3)
+                for loc, vis in zip(env.tag_locals, env.tags_visible()):
+                    g = sc.geoms[sc.ngeom]
+                    mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_BOX, np.array([TAG_HALF, TAG_HALF, 0.0015]),
+                                        d.xpos[env.bid] + R @ loc, R.ravel(),
+                                        np.array([0.1, 0.8, 0.2, 1] if vis else [0.9, 0.1, 0.1, 1], np.float32))
+                    sc.ngeom += 1
             imgs.append(r.render().copy())
         frames.append(np.concatenate(imgs, 1))
         bodies = lambda g: g.split("_sph")[0].split("_box")[0]  # 合并同一个零件的多个碰撞体，避免一行太长
         cs = sorted({f"{bodies(x)}-{bodies(y)}" for x, y in seen if "floor" not in x + y and "water" not in x + y})
-        texts.append(f"step {env.steps:3d}  船速 {100*info['boat_speed']:4.1f} cm/s  夹持点距离 {1000*info['dist']:3.0f} mm"
+        texts.append((f"顶部相机：{'被挡住（丢帧）' if info['occluded'] else '看得到标签'}  累计丢帧 {info['n_occluded']}/{env.steps}  " if env.occlusion else "")
+                     + (f"腕部相机：{'看到桅杆' if env.wrist_age == 0 else '没看到'}  " if env.wrist else "") + f"step {env.steps:3d}  船速 {100*info['boat_speed']:4.1f} cm/s  夹持点距离 {1000*info['dist']:3.0f} mm"
                      f"\n夹住 {'是' if info['grasped'] else '否'}  连续静止 {env.hold}/10  撞墙 {info.get('wall_hits', 0)} 次  游回 {info.get('reaims', 0)} 次  推力 {'开' if env.swim_target is not None else '关'}"
                      f"  KF 速度误差 {100*info['kf_vel_err']:.1f} cm/s\n接触: {', '.join(cs) if cs else '无'}")
         if t or tr:

@@ -34,6 +34,7 @@ import mujoco
 from envs.grasp_env import GraspEnv, GRIP_STEP, GRIP_DEPTH
 from envs.reset_env import MAST_TOP, GRIP_OPEN, ROLL_STEP, WS_LO, WS_HI, wrap_half_pi
 from envs.kalman import BoatKF, wrap_pi
+from envs.ik import smooth_tcp_step
 
 BOAT_Z_EQ = -0.04 - 0.0168 + 0.025
 HORIZONS = (0.25, 0.5, 1.0)
@@ -41,6 +42,17 @@ WALL_GEOMS = ["tank_wall_back", "tank_wall_front", "tank_wall_yneg", "tank_wall_
 HOLD_STEPS = 10
 HOVER_GP = 0.05                      # 脚本拦截器接近时 TCP 在夹持点上方的高度（= 桅杆顶上方 3.5 cm，和阶段 1 一样）。
                                      # 10-23：曾用 6.5 cm 避免扫到桅杆（当时 z 振荡）；底层振荡修好后降回来，6.5 cm 时 x ≈ 0.30 m 的船竖直够不到
+# 顶部相机遮挡模型（10-24）：相机在缸中央正上方 1 m；AprilTag（4 × 4 cm）贴在甲板上、桅杆前方 7 cm（船头一侧）。
+# 从相机向标签中心和 4 个角各打一条光线，被机械臂挡住任意一条 = 这一帧识别不到（AprilTag 要看到完整四边形）。
+TOP_CAM = np.array([0.44, 0.0, 1.0])
+TAG_LOCAL = np.array([0.07, 0.0, 0.0251])                 # 单标签时的位置（甲板面 = 船体半高 0.025），已不用
+# 10-24：真机船头、船尾各贴一个（ID 不同，不会认错头尾），甲板上距中心 ±9 cm。任意一个完整可见就有读数
+TAG_LOCALS = [np.array([0.09, 0.0, 0.0251]), np.array([-0.09, 0.0, 0.0251])]
+TAG_HALF = 0.02
+# 腕部相机（10-24）：模型自带的 wrist_cam（装在夹爪上的 camera_mount，竖直视场 61°，按 4:3 画幅）。
+# 测桅杆顶部中心的位置和桅杆朝向（扁长方体分不出船头船尾 → 朝向只知道对 180° 取模）；离得近，比顶部相机准。
+WRIST_SIGMA_POS, WRIST_SIGMA_YAW, WRIST_RANGE = 0.0005, np.radians(1.0), 0.35
+AGE_CAP = 20                                              # "距上次有读数的帧数"的上限（观测里除以它归一化）
 ZONE_LO, ZONE_HI = np.array([0.22, -0.15]), np.array([0.30, 0.15])   # 可抓区（船体中心）：桅杆在手臂够得着、船体放得下的范围
                                      # 10-23：x 上限原为 0.38；夹爪竖直、在悬停高度时手臂只够到约 0.30 m
 SWIM_TAU, SWIM_FMAX = 0.3, 0.3                        # 游回可抓区：速度跟踪时间常数 0.3 s，推力上限 0.3 N
@@ -54,13 +66,26 @@ def _hull_extent(yaw):
 
 
 class InterceptEnv(GraspEnv):
-    def __init__(self, predictor="kf", v_range=(0.0, 0.08), max_steps=200, noise=True, latency=1, noise_range=None, **kw):
+    def __init__(self, predictor="kf", v_range=(0.0, 0.08), max_steps=200, noise=True, latency=1, noise_range=None,
+                 occlusion=False, wrist=False, action_filter=0.0, two_tags=True, rate_limit=0.0, smooth_penalty=0.5, **kw):
         super().__init__(max_steps=max_steps, **kw)
         self.predictor, self.v_range, self.noise, self.latency = predictor, v_range, noise, latency
         self.sigma_pos, self.sigma_yaw = 0.001, np.radians(0.5)   # 相机测量噪声（AprilTag：1 mm、0.5°）；评估抗干扰时可以调大
         # 10-23：每回合随机相机噪声（例如 (0.001, 0.003)）。KF 按当回合的噪声配置（真机上相机噪声可以标定），
         # 突变门限 = 6 σ（v2 评估里门限固定 6 mm、噪声 3 mm 时 KF 把噪声当成突变，A 方案成功率掉到 2 %）
         self.noise_range = noise_range
+        # 动作低通滤波（10-24）：实际执行 = α·上一步执行的 + (1-α)·策略输出（TCP 位移和转腕 4 维；夹爪不滤，开合要果断）。
+        # SAC 的动作相邻两步平均变化是脚本的 3 倍，动作变化惩罚只压下一半；滤波后物理上不可能每步来回反向。
+        # 观测里的"上一步动作"是实际执行的那个，策略能看到滤波器的状态
+        self.action_filter = action_filter
+        self.smooth_penalty = smooth_penalty
+        self.block_outward = True                             # 边界处不往外推（envs/ik.py::smooth_tcp_step）；v4 之前训练的模型可以关掉                  # 奖励里动作变化惩罚的系数：-smooth_penalty·|Δa|²（默认 0.5；stage9 用 2.0）
+        self.rate_limit = rate_limit                          # >0：执行的动作每步最多变化这么多（TCP 位移和转腕 4 维），硬约束
+        self.tag_locals = TAG_LOCALS if two_tags else [TAG_LOCAL]   # 船头船尾两个标签（默认）；False = 只有桅杆前一个（stage7 的设定）
+        self.occlusion = occlusion                            # True：顶部相机会被机械臂挡住（见 _tag_visible）
+        self.wrist = wrist                                    # True：加腕部相机（见 _wrist_measure）
+        self.ext_obs = occlusion or wrist                     # 扩展观测（两个相机的"距上次读数帧数"/腕部读数），维数变了要重训
+        self.top_age, self.wrist_age, self.wrist_last = 0, AGE_CAP, None   # 父类 reset 会先读一次观测，先给初值
         self.ramp_ctrl = True                                 # 舵机目标在每个控制步内线性过渡（见 step）
         m = self.m
         self.walls = {m.geom(n).id for n in WALL_GEOMS}
@@ -72,18 +97,70 @@ class InterceptEnv(GraspEnv):
         self.kf = BoatKF()
         self.kf.reset((0.0, 0.0), 0.0)                       # 父类 reset 里会先调用一次 _obs()，要先有这些
         self.hist = deque([(np.zeros(2), 0.0)] * N_HIST, maxlen=N_HIST)
-        n_obs = 39 if predictor == "kf" else 43
+        n_obs = (39 + 2 * (occlusion or wrist)) if predictor == "kf" else (43 + 6 * (occlusion or wrist))
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(n_obs,), dtype=np.float32)
 
     # ---------- 相机测量 ----------
     def _measure(self):
-        """当前真实位姿 + 噪声（还没加延迟）。"""
+        """当前真实位姿 + 噪声（还没加延迟）；开了遮挡模型且标签被挡住时返回 None（这一帧没有测量）。"""
+        if self.occlusion and not self._tag_visible():
+            return None
         p = self.d.xpos[self.bid][:2].copy()
         yaw = self._boat_yaw()
         if self.noise:
             p += self.np_random.normal(0, self.sigma_pos, 2)
             yaw = wrap_pi(yaw + self.np_random.normal(0, self.sigma_yaw))
         return p, yaw
+
+    def _one_tag_visible(self, local):
+        """顶部相机能不能完整看到这一个 AprilTag（中心和 4 个角都不被机械臂的可视几何体 group 2 挡住）。"""
+        R = self.d.xmat[self.bid].reshape(3, 3); c = self.d.xpos[self.bid]
+        mask = np.array([0, 0, 1, 0, 0, 0], np.uint8)
+        gid = np.zeros(1, np.int32)
+        for dx, dy in [(0, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]:
+            pt = c + R @ (local + np.array([dx * TAG_HALF, dy * TAG_HALF, 0.0]))
+            t = mujoco.mj_ray(self.m, self.d, TOP_CAM, pt - TOP_CAM, mask, 1, -1, gid)
+            if 0 <= t < 0.999:                                # 在到达标签之前打到了机械臂
+                return False
+        return True
+
+    def tags_visible(self):
+        """每个标签是否可见（GIF 画图也用）。"""
+        return [self._one_tag_visible(t) for t in self.tag_locals]
+
+    def _tag_visible(self):
+        """至少一个标签完整可见 → 这一帧有读数（两个标签 ID 不同，任意一个都给出完整位姿）。"""
+        return any(self.tags_visible())
+
+    def _wrist_measure(self):
+        """腕部相机：桅杆顶部中心在视场内、距离 < WRIST_RANGE 时返回 (xy, 朝向 mod π) + 噪声，否则 None。"""
+        if not self.wrist:
+            return None
+        cid = self.m.camera("wrist_cam").id
+        cpos, cR = self.d.cam_xpos[cid], self.d.cam_xmat[cid].reshape(3, 3)
+        top = self.d.xpos[self.bid] + self.d.xmat[self.bid].reshape(3, 3) @ np.array([0.0, 0.0, MAST_TOP])
+        v = cR.T @ (top - cpos)                               # 相机坐标系：看向 -z，y 朝上
+        if v[2] >= 0 or np.linalg.norm(v) > WRIST_RANGE:
+            return None
+        tv = np.tan(np.radians(self.m.cam_fovy[cid]) / 2); th = tv * 4 / 3
+        if abs(v[0] / -v[2]) > th or abs(v[1] / -v[2]) > tv:
+            return None
+        p = top[:2].copy(); yaw = self._boat_yaw()
+        if self.noise:
+            p += self.np_random.normal(0, WRIST_SIGMA_POS, 2)
+            yaw += self.np_random.normal(0, WRIST_SIGMA_YAW)
+        return p, float(wrap_pi(2 * yaw) / 2)                 # 朝向只知道对 180° 取模
+
+    def _lag(self):
+        """延迟补偿（10-24，"延迟状态滤波"）：扩展观测模式下 KF 运行在读数拍下的时刻（latency 帧以前），读数直接用来更新；
+        给策略 / 脚本的"当前估计"只在输出时按匀速往前推 latency 帧，不回到滤波器里，没有反馈。
+        （试过两种把读数往前推的写法：读数 + 速度 × 延迟、读数 + KF 这几帧的位移，延迟 3 帧时都会形成反馈、KF 发散到无穷大。）"""
+        return self.latency * 0.05 if self.ext_obs else 0.0
+
+    def _kf_now(self):
+        """KF 估计往前推到"现在"：(位置, 朝向)。"""
+        lag = self._lag()
+        return self.kf.pos + self.kf.vel * lag, float(wrap_pi(self.kf.yaw + self.kf.yaw_rate * lag))
 
     def _camera(self):
         """把这一帧放进延迟队列，返回 latency 帧之前的测量。"""
@@ -133,17 +210,27 @@ class InterceptEnv(GraspEnv):
         tilt = self._tilt()
         if self.predictor == "kf":
             kf = self.kf
-            gp = self._grip_point_from(kf.pos)
-            e = self._angle_err_from(kf.yaw)
-            preds = np.concatenate([kf.predict(t)[0] - tcp[:2] for t in HORIZONS])
+            pos_now, yaw_now = self._kf_now()
+            gp = self._grip_point_from(pos_now)
+            e = self._angle_err_from(yaw_now)
+            preds = np.concatenate([kf.predict(t + self._lag())[0] - tcp[:2] for t in HORIZONS])
             return np.concatenate([q, qd, tcp, gp - tcp, kf.vel, [kf.yaw_rate], [np.sin(2 * e), np.cos(2 * e)], preds,
-                                   [self._time_to_wall(kf.pos, kf.vel, kf.yaw) / 5.0], self.prev_action, [grip_err], tilt]).astype(np.float32)
+                                   [self._time_to_wall(pos_now, kf.vel, yaw_now) / 5.0], self.prev_action, [grip_err], tilt]
+                                  + ([[self.top_age / AGE_CAP, self.wrist_age / AGE_CAP]] if self.ext_obs else [])).astype(np.float32)
         hist = list(self.hist)                                # 最近 N_HIST 帧原始测量（旧 → 新）
         p_now, y_now = hist[-1]
         gp = self._grip_point_from(p_now)
         rel = np.concatenate([p - tcp[:2] for p, _ in hist])
         ang = np.concatenate([[np.sin(2 * self._angle_err_from(y)), np.cos(2 * self._angle_err_from(y))] for _, y in hist])
-        return np.concatenate([q, qd, tcp, gp - tcp, rel, ang, self.prev_action, [grip_err], tilt]).astype(np.float32)
+        ext = []
+        if self.ext_obs:                                      # 顶部相机这一帧有没有读数 + 腕部相机最新读数（相对 TCP）和是否新鲜
+            if self.wrist_last is not None:
+                ew = self._angle_err_from(self.wrist_last[1])
+                wr = [self.wrist_last[0] - tcp[:2], [np.sin(2 * ew), np.cos(2 * ew)]]
+            else:
+                wr = [np.zeros(2), [0.0, 1.0]]
+            ext = [[float(self.top_age == 0)], *wr, [float(self.wrist_age == 0)]]
+        return np.concatenate([q, qd, tcp, gp - tcp, rel, ang, self.prev_action, [grip_err], tilt] + ext).astype(np.float32)
 
     # ---------- Gymnasium 接口 ----------
     def reset(self, seed=None, options=None):
@@ -181,14 +268,20 @@ class InterceptEnv(GraspEnv):
         self.in_wall = False; self.wall_hits = 0; self.prev_speed = float(v)
         self.swim_target = None; self.swim_speed = 0.0; self.reaims = 0
         self.q_cmd = e.d.qpos.copy(); self.tcp_cmd = self.ik.tcp(e.d).copy(); self.roll_cmd = float(e.d.qpos[e.roll_qa])
+        self.limit_dir = None
         self.grip_cmd = GRIP_OPEN
         if self.noise_range is not None:
             self.sigma_pos = float(rng.uniform(*self.noise_range))
             self.sigma_yaw = np.radians(0.5) * self.sigma_pos / 0.001
             self.kf = BoatKF(sigma_pos=self.sigma_pos, sigma_yaw=self.sigma_yaw, gate=6 * self.sigma_pos)
+        occ, self.occlusion = self.occlusion, False            # 开始时手臂在 home、标签可见
         self.meas_q = deque(maxlen=self.latency + 1)
         for _ in range(self.latency + 1):
             self.meas_q.append(self._measure())
+        self.occlusion = occ
+        self.n_occluded = 0
+        self.wq = deque([None] * (self.latency + 1), maxlen=self.latency + 1)   # 腕部相机的延迟队列
+        self.top_age, self.wrist_age, self.wrist_last, self.n_wrist = 0, AGE_CAP, None, 0
         p0, y0 = self.meas_q[0]
         self.kf.reset(p0, y0)
         self.hist = deque([(p0, y0)] * N_HIST, maxlen=N_HIST)
@@ -233,7 +326,7 @@ class InterceptEnv(GraspEnv):
         keep, self.predictor = self.predictor, "kf"
         o = self._obs()
         self.predictor = keep
-        return o
+        return o[:39]                                         # 脚本拦截器只用前 39 维
 
     def _boat_hits_wall(self):
         for c in self.d.contact[:self.d.ncon]:
@@ -243,17 +336,14 @@ class InterceptEnv(GraspEnv):
 
     def step(self, action):
         a = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
+        if self.action_filter:
+            a[:4] = self.action_filter * self.prev_action[:4] + (1 - self.action_filter) * a[:4]
+        if self.rate_limit:
+            a[:4] = self.prev_action[:4] + np.clip(a[:4] - self.prev_action[:4], -self.rate_limit, self.rate_limit)
         self.roll_cmd = float(np.clip(self.roll_cmd + a[3] * ROLL_STEP, self.roll_lo, self.roll_hi))
         self.grip_cmd = float(np.clip(self.grip_cmd + a[4] * GRIP_STEP, self.grip_lo, GRIP_OPEN))
         self.q_cmd[self.roll_qa] = self.roll_cmd
-        self.tcp_cmd = np.clip(self.tcp_cmd + a[:3] * self.step_size, WS_LO, WS_HI)
-        self.q_cmd, ik_info = self.ik.solve(self.q_cmd, self.tcp_cmd, line_search=True)
-        if ik_info["reason"] == "stalled" and ik_info["err_pos"] > 0.005:
-            # 防积分饱和（anti-windup，10-23）：TCP 目标是动作一步步累加出来的；IK 往哪个方向都不能再接近（够不到）时，
-            # 把它拉回到 IK 实际达到的位置，免得目标越加越远、手臂一直顶在可达边界上。
-            # 只看 "stalled"：手臂快速移动时 3 次迭代没收敛也会有几毫米误差，那时不能拉回
-            self.ik.d.qpos[:] = self.q_cmd
-            self.tcp_cmd = self.ik._fk()[0].copy()
+        smooth_tcp_step(self, a[:3] * self.step_size, WS_LO, WS_HI, self.block_outward)   # IK 线搜索 + 防积分饱和 + 边界处不往外推（envs/ik.py）
         ctrl0 = self.d.ctrl.copy()
         self.d.ctrl[self.ik.qadr] = self.q_cmd[self.ik.qadr]
         self.d.ctrl[self.roll_act] = self.roll_cmd
@@ -274,8 +364,30 @@ class InterceptEnv(GraspEnv):
         self.prev_action = a
         # 相机 → 卡尔曼滤波 / 历史
         z = self._camera()
-        self.kf.step(*z)
-        self.hist.append(z)
+        occluded = z is None
+        if occluded:                                          # 丢帧：KF 只预测不更新；历史缓存重复上一次的有效测量
+            self.n_occluded += 1
+            self.kf.step(None, None)
+            self.hist.append(self.hist[-1])
+        else:
+            self.kf.step(*z)                                  # 扩展观测模式下 KF 本来就在读数的时刻上（见 _lag）
+            self.hist.append(z)
+        self.top_age = min(self.top_age + 1, AGE_CAP) if occluded else 0
+        self.wq.append(self._wrist_measure())
+        zw = self.wq[0]
+        if zw is not None:                                    # 腕部相机：同一时刻再更新一次 KF（朝向对 180° 取模）
+            self.kf.update(zw[0], zw[1], sigma_pos=WRIST_SIGMA_POS, sigma_yaw=WRIST_SIGMA_YAW, gate=0.006, half_turn=True)
+            self.wrist_last, self.wrist_age = zw, 0
+            self.n_wrist += 1
+        else:
+            self.wrist_age = min(self.wrist_age + 1, AGE_CAP)
+        if self.ext_obs and self.grip_cmd - float(self.d.qpos[self.grip_qa]) < -0.02:
+            # 本体感觉（10-24）：夹爪指令比实际更合、合不拢 = 桅杆在两指之间。桅杆位置 ≈ TCP（关节角 + 正运动学，无延迟），
+            # 桅杆长边 ⟂ 合拢方向（朝向对 180° 取模）。夹住后两个相机都常常看不到船，没有它 KF 会按原速度一直往前推、误差到几十厘米
+            cd = self._close_dir()
+            lag = self._lag()                                 # 本体感觉没有延迟：往回推到滤波器所在的时刻
+            self.kf.update(self.ik.tcp(self.d)[:2] - self.kf.vel * lag, float(np.arctan2(cd[1], cd[0]) + np.pi / 2) - self.kf.yaw_rate * lag,
+                           sigma_pos=0.003, sigma_yaw=np.radians(3), gate=1.0, half_turn=True)
         # 真实状态（奖励、成功判断用）
         tcp = self.ik.tcp(self.d)
         rel = self._grip_point() - tcp
@@ -301,7 +413,7 @@ class InterceptEnv(GraspEnv):
         success = self.hold >= HOLD_STEPS and moved < 0.01
         reward = (-dist - 0.1 * abs(e) - 0.5 * (2 - f_touch - m_touch) - (0.0 if grasped else 1.0)
                   - (0.5 * rel_v if dist < 0.05 else 0.0) - 0.01 * float(a @ a) - (1.0 if collided else 0.0)
-                  - 0.5 * da2                                         # 动作变化惩罚（10-23 v3：没有它 SAC 学出 10 Hz 来回抖动）
+                  - self.smooth_penalty * da2                         # 动作变化惩罚（10-23 v3：没有它 SAC 学出 10 Hz 来回抖动）
                   - (10.0 * abs(tilt[0]) + 0.5 * float(np.hypot(tilt[1], tilt[2])) if grasped else 0.0)
                   - ((2.0 + 100.0 * self.prev_speed) if impact else 0.0)          # 撞墙：按撞前船速加重（15 cm/s ≈ −17）
                   - (1.0 if wall and (grasped or f_touch or m_touch) else 0.0)     # 夹着 / 碰着船时船贴墙：每步 −1
@@ -312,8 +424,8 @@ class InterceptEnv(GraspEnv):
         truncated = self.steps >= self.max_steps
         info = dict(dist=dist, angle_err_deg=float(np.degrees(e)), grasped=grasped, boat_speed=speed, rel_v=rel_v,
                     wall=impact, wall_hits=self.wall_hits, reaims=self.reaims, collided=collided, success=bool(success), is_success=bool(success),
-                    kf_pos_err=float(np.linalg.norm(self.kf.pos - self.d.xpos[self.bid][:2])),
-                    kf_vel_err=float(np.linalg.norm(self.kf.vel - boat_v)), v0=self.v0, da2=da2)
+                    kf_pos_err=float(np.linalg.norm(self._kf_now()[0] - self.d.xpos[self.bid][:2])),
+                    kf_vel_err=float(np.linalg.norm(self.kf.vel - boat_v)), v0=self.v0, da2=da2, occluded=occluded, n_occluded=self.n_occluded, n_wrist=self.n_wrist)
         return self._obs(), reward, terminated, truncated, info
 
 

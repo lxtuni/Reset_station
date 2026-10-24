@@ -36,23 +36,37 @@ class BoatKF:
 
     def step(self, z_pos=None, z_yaw=None):
         """预测一步；有测量就更新。z_pos = (x, y)，z_yaw = θ；缺帧时传 None。"""
+        self.predict_step()
+        self.update(z_pos, z_yaw)
+
+    def predict_step(self):
+        """只做预测（时间往前走 dt）。"""
         self.x = self.F @ self.x
         self.P = self.F @ self.P @ self.F.T + self.Q
         self.y = self.Fy @ self.y
         self.Py = self.Fy @ self.Py @ self.Fy.T + self.Qy
+
+    def update(self, z_pos=None, z_yaw=None, sigma_pos=None, sigma_yaw=None, gate=None, half_turn=False):
+        """用一个测量更新（同一时刻可以依次用多个传感器更新）。sigma_* / gate 不给就用顶部相机的默认值。
+        half_turn=True：朝向只知道对 180° 取模（腕部相机看桅杆：扁长方体分不出船头船尾），取离当前估计最近的那个解。"""
+        R = self.R if sigma_pos is None else np.eye(2) * sigma_pos ** 2
+        Ry = self.Ry if sigma_yaw is None else sigma_yaw ** 2
+        gate = self.gate if gate is None else gate
         if z_pos is not None:
             innov = np.asarray(z_pos) - self.H @ self.x
-            if np.linalg.norm(innov) > self.gate:             # 测量和预测差太多 = 速度突变（撞墙反弹、被夹爪碰到）
+            if np.linalg.norm(innov) > gate:                  # 测量和预测差太多 = 速度突变（撞墙反弹、被夹爪碰到）
                 self.P[2:, 2:] += np.eye(2) * 0.01            # 速度重新变"不确定"，几帧内就能重新估准（10-23）
                 self.jumps += 1
-            S = self.H @ self.P @ self.H.T + self.R
+            S = self.H @ self.P @ self.H.T + R
             K = self.P @ self.H.T @ np.linalg.inv(S)
             self.x = self.x + K @ innov
             self.P = (np.eye(4) - K @ self.H) @ self.P
         if z_yaw is not None:
-            s = self.Py[0, 0] + self.Ry
-            k = self.Py[:, 0] / s
             innov = wrap_pi(z_yaw - self.y[0])
+            if half_turn:
+                innov = wrap_pi(2 * innov) / 2                # 差 180° 的两个解里取离估计近的那个
+            s = self.Py[0, 0] + Ry
+            k = self.Py[:, 0] / s
             self.y = self.y + k * innov
             self.y[0] = wrap_pi(self.y[0])
             self.Py = self.Py - np.outer(k, self.Py[0, :])

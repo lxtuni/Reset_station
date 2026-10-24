@@ -25,6 +25,7 @@ from gymnasium import spaces
 import mujoco
 
 from envs.grasp_env import GraspEnv
+from envs.ik import smooth_tcp_step
 from envs.reset_env import MAST_TOP, ROLL_STEP, WS_LO, WS_HI, GRIP_OPEN
 
 TARGET_XY = np.array([0.24, 0.0])
@@ -86,6 +87,7 @@ class DragEnv(GraspEnv):
         restore(self, s)
         self.boat_xy0 = self.d.xpos[self.bid][:2].copy()
         self.hold = self.release = 0
+        self.limit_dir = None
         self.steps = 0
         self.prev_action = np.zeros(5)
         return self._obs(), {}
@@ -95,11 +97,11 @@ class DragEnv(GraspEnv):
         self.roll_cmd = float(np.clip(self.roll_cmd + a[3] * ROLL_STEP, self.roll_lo, self.roll_hi))
         self.grip_cmd = float(np.clip(self.grip_cmd + a[4] * 0.1, self.grip_lo, GRIP_OPEN))
         self.q_cmd[self.roll_qa] = self.roll_cmd
-        self.tcp_cmd = np.clip(self.tcp_cmd + a[:3] * self.step_size, WS_LO, WS_HI)
-        self.q_cmd, ik_info = self.ik.solve(self.q_cmd, self.tcp_cmd, line_search=self.smooth)
-        if self.smooth and ik_info["reason"] == "stalled" and ik_info["err_pos"] > 0.005:
-            self.ik.d.qpos[:] = self.q_cmd                    # 防积分饱和：够不到时把 TCP 指令拉回 IK 实际达到的位置
-            self.tcp_cmd = self.ik._fk()[0].copy()
+        if self.smooth:                                       # IK 线搜索 + 防积分饱和 + 边界处不往外推（envs/ik.py）
+            smooth_tcp_step(self, a[:3] * self.step_size, WS_LO, WS_HI, block_outward=False)
+        else:
+            self.tcp_cmd = np.clip(self.tcp_cmd + a[:3] * self.step_size, WS_LO, WS_HI)
+            self.q_cmd, _ = self.ik.solve(self.q_cmd, self.tcp_cmd)
         ctrl0 = self.d.ctrl.copy()
         self.d.ctrl[self.ik.qadr] = self.q_cmd[self.ik.qadr]
         self.d.ctrl[self.roll_act] = self.roll_cmd

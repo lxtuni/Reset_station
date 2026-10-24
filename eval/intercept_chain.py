@@ -22,6 +22,7 @@ icpt_model = SAC.load(os.path.join(ICPT, "best_model.zip"))
 drag_model = None if DRAG == "scripted" else SAC.load(os.path.join(DRAG, "best_model.zip"))
 drag_pol = scripted_drag if drag_model is None else (lambda o: drag_model.predict(o, deterministic=True)[0])
 ienv = InterceptEnv(predictor="history" if "history" in ICPT else "kf")
+ienv.block_outward = False                                # v4 拦截策略是在"边界处不往外推"之前训练的，按它训练时的环境评估
 denv = DragEnv(start_states="results/stage6_intercept_drag/start_states_intercept.npz", smooth=True)
 
 
@@ -43,6 +44,7 @@ def episode(seed, vr, on_step=None):
     denv.boat_xy0 = denv.d.xpos[denv.bid][:2].copy()
     denv.hold = denv.release = denv.steps = 0
     denv.prev_action = np.zeros(5)
+    denv.limit_dir = None
     res["yaw0"] = float(np.degrees(abs(wrap_pi(denv._boat_yaw() - TARGET_YAW))))
     obs = denv._obs()
     while True:

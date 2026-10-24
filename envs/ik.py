@@ -116,3 +116,29 @@ class IK:
         err_pos = np.linalg.norm(p_target - p); err_rot = np.arcsin(min(1.0, np.linalg.norm(np.cross(a, self.a_des))))
         ok = err_pos < self.tol_pos and err_rot < self.tol_rot
         return self.d.qpos.copy(), dict(success=ok, iters=self.max_iter, err_pos=err_pos, err_rot=err_rot, reason="converged" if ok else "max_iter")
+
+
+def smooth_tcp_step(env, delta, lo, hi, block_outward=True):
+    """新的手臂控制里"TCP 指令走一步 + IK"（拦截、拦截后的拖动转向用）。env 需要有 tcp_cmd、q_cmd、ik、limit_dir。
+
+    - IK 用回溯线搜索（够不到时停在最接近的姿态，不来回跳）。
+    - 防积分饱和：IK 停住（够不到）时，把 TCP 指令拉回实际达到的位置，并记下"往外"的方向 limit_dir。
+    - 下一步动作里朝 limit_dir 往外的分量去掉（10-24）。只拉回不去掉时，动作每步往外推 1 cm、又被拉回，
+      手臂在可达边界上一推一拉，elbow_flex 角速度每步变号（±2.5 rad/s），看起来就是抖。
+    block_outward=False：只拉回、不去掉往外的分量（拦截后的拖动转向用：它的 SAC 是在这之前训练的，
+    加上阻挡后在可达边界附近掉头变差，完整链路 97 % → 92 %）。
+    返回 IK 的 info。"""
+    u = env.limit_dir
+    if u is not None and float(delta @ u) > 0:
+        delta = delta - float(delta @ u) * u
+    env.tcp_cmd = np.clip(env.tcp_cmd + delta, lo, hi)
+    env.q_cmd, info = env.ik.solve(env.q_cmd, env.tcp_cmd, line_search=True)
+    if info["err_pos"] < 0.002:                         # 真正回到可达范围内（收敛）才解除"不往外推"。
+        env.limit_dir = None                              # 只管一步时：去掉往外分量 → 没停住 → 解除 → 又往外推 → 停住，两步一循环
+    if info["reason"] == "stalled" and info["err_pos"] > 0.005:
+        env.ik.d.qpos[:] = env.q_cmd
+        reached = env.ik._fk()[0].copy()
+        out = env.tcp_cmd - reached
+        env.limit_dir = out / (np.linalg.norm(out) + 1e-12) if block_outward else None
+        env.tcp_cmd = reached
+    return info

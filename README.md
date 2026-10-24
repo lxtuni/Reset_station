@@ -158,6 +158,65 @@ Full chain, intercept policy A (seed 0), 20 episodes per speed bin (`eval/interc
 Seed 2 reached 80 % at 55 k steps, then collapsed to holding the hull forever for 100 k steps and only partly recovered;
 seeds 0 and 1 converged to 100 % in training.
 
+**Occlusion of the overhead camera, AprilTags and the wrist camera**
+
+Everything above assumes the overhead camera always sees the hull. It does not: when the arm reaches over the hull, the arm
+itself blocks the line of sight (ray test from the camera, 1 m above the tank centre, to each tag's centre and corners against
+the arm's visual meshes, `occlusion=True`). Three sensor layouts were compared:
+
+- *One tag* on the deck 7 cm from the mast (`two_tags=False`, `results/stage7_wrist/`): 89–98 % of the frames are lost in the
+  last 5 cm of the approach, because BODY2 arrives bow first and the tag sits right under the arm.
+- *Two tags*, bow and stern, 9 cm from the hull centre (`two_tags=True`, default; `results/stage8_two_tags/`): the arm rarely
+  covers both, and only 27 % of the frames are lost near the mast. Each tag has its own ID, so either one gives the full pose.
+- *Wrist camera*: the SO-101 model already carries one (`wrist_cam` on `camera_mount`, 61° vertical field of view), and from
+  hover to grasp it sees the mast between the jaws. Modelled as a second sensor (`wrist=True`): mast-top position and heading
+  (modulo 180° — the flat mast does not tell bow from stern) whenever the mast top is in view and closer than 35 cm, 0.5 mm / 1°
+  noise, one frame of latency.
+
+The Kalman filter fuses all of it, plus *proprioception*: once the mast is clamped, its position (≈ TCP) and heading (⟂ to the
+closing direction) follow from the joint angles — without this the KF kept extrapolating the old velocity after the grasp, ran
+off by 10–60 cm, and the policy dragged the hull into a wall. The filter runs at the time of the measurements and only its
+output is extrapolated over the latency. A gets the fused estimate plus the frames since each camera last saw the boat; B gets
+its four overhead frames (held when occluded), the latest wrist reading and "fresh reading" flags.
+
+<p align="center"><img src="docs/wrist_camera.png" width="900" alt="Success rate for five sensor layouts"></p>
+<p align="center"><img src="docs/intercept_two_tags.gif" width="640" alt="Policy A with two tags: a tag turns red while the arm covers it, the policy still aligns, grasps and stops the hull"></p>
+
+| Sensors (0–20 cm/s, 6 bins × 30 episodes, 3 seeds) | scripted | A, SAC + Kalman filter | B, SAC + raw history |
+|---|---|---|---|
+| overhead camera, never occluded | 100 % | 100 % | 98 % |
+| one tag, occluded by the arm | 55 % | 43 % (seeds 32 / 74 / 22 %) | 3 % |
+| one tag + wrist camera | 94 % | 98 % | 24 % |
+| **two tags, occluded by the arm** | 96 % | **98 %** (99 / 98 / 98 %) | **98 %** (98 / 99 / 98 %) |
+| two tags + wrist camera | 96 % | 99 % | 96 % |
+
+- With a single tag the wrist camera looks indispensable, and B — without memory — cannot cope with its intermittent inputs:
+  it hovers over the mast and never descends. That conclusion was mostly an artefact of where the tag was: **with a tag at
+  bow and stern the overhead camera alone is enough**, the wrist camera adds nothing measurable, and A and B are level again.
+  The wrist camera remains a useful backup (a tag lost to glare or a splash).
+- Under two tags and occlusion, A reaches 99 / 97 / 99 % under standard, 3× noise and 3-frame delay, 2.1 s to success (scripted:
+  5.6 s), 0.03 wall hits per episode with 15–20 cm/s boats (scripted: 1.1).
+
+**Smooth motion.** Even after the fixes listed below, SAC still moved the arm more nervously than the scripted interceptor.
+Two more changes (`results/stage9_smooth/`, two tags + occlusion): an action low-pass filter (executed action = 0.8 × previous
++ 0.2 × policy output for the TCP and wrist; the gripper is not filtered) with the action-change penalty raised from 0.5 to
+2.0, and choosing the checkpoint by success *and* smoothness instead of success alone (`eval/select_smooth.py`; the numbers
+below come from episodes the selection did not see):
+
+| Policy A, held-out episodes | joint velocity sign flips per step | joint acceleration (RMS) | success | time |
+|---|---|---|---|---|
+| v4 (no filter, ideal camera), as trained | 3.34 % | 10.7 rad/s² | 100 % | 1.8 s |
+| v4 with the edge-of-reach fix only | 1.39 % | 8.0 rad/s² | 100 % | 1.8 s |
+| stage8 (filter 0.6, penalty 0.5) | 0.63 % | 6.4 rad/s² | 98 % | 2.1 s |
+| stage9 (filter 0.8, penalty 2.0), best by success | 0.32 % | 4.7 rad/s² | 98.5 % | 2.3 s |
+| stage9, chosen for smoothness | **0.23 %** | **4.2 rad/s²** | 97.8 % | 2.4 s |
+| scripted interceptor | 0.14 % | 3.4 rad/s² | 86 % | 4.7 s |
+
+For B the smoothness-selected checkpoints lost success (95 %, more wall hits), so B keeps its best-by-success models.
+Every policy is evaluated with the arm control it was trained with: the edge-of-reach fix (below) is only switched on for
+stage8 and later (`InterceptEnv.block_outward`); switched on under the v4 intercept policy it dropped the intercept → drag chain
+from 97 % to 92 %.
+
 **What went wrong on the way** (kept as evidence in `results/stage5_intercept/` and `results/stage6_intercept_drag/_veraltet/`)
 
 - *Wall as a brake.* With a flat −2 per wall hit, SAC learned to grasp and then slam the hull into the fence corner to stop it
@@ -182,6 +241,19 @@ seeds 0 and 1 converged to 100 % in training.
   target. Starting next to the target this never mattered; after a 160° turn one seed learned to stop 13° short of the 10°
   tolerance and hold forever. With `smooth=True` every per-step term is now ≤ 0 (time penalty, penalties for not opening and
   still touching the mast at the target).
+- *Feeding the velocity back.* The first latency compensation shifted each measurement forward by velocity × latency
+  (then by the KF's own displacement over the latency). Both feed the estimate back into the measurement; at 3 frames of
+  latency the KF diverged to infinity and every evaluation in that condition crashed on NaN actions. Fixed by running the
+  filter at the measurement time and extrapolating only its output.
+- *Pushing at the edge of reach.* With the TCP command beyond reach, anti-windup pulled it back to the reached point, the next
+  action pushed it out again, and the elbow velocity flipped sign every step (±2.5 rad/s) — in the scripted interceptor too.
+  The outward component of the action is now removed until the IK has converged again (`envs/ik.py::smooth_tcp_step`); joint
+  sign flips of the scripted interceptor fell from 1.7 % to 0.3 %.
+- *One tag in the wrong place.* The first occlusion experiment (one tag, right under the arm) concluded that the wrist camera
+  is indispensable and that a memoryless B fails. With tags at bow and stern neither holds; the single-tag results are kept in
+  `results/stage7_wrist/` because they show what a badly placed marker costs.
+- *"wrist" in a path.* The experiment folder is called `stage7_wrist`, so a check for "wrist" in a model path turned the
+  wrist camera on for the occluded-only models too. The evaluation now checks for `occl_wrist`.
 
 ## Limitations
 
@@ -195,12 +267,15 @@ seeds 0 and 1 converged to 100 % in training.
 - The reset chain of steps 0–3 still uses the old arm control (servo targets jumping every 50 ms); only the intercept chain
   uses the smoothed control.
 - Drift after release is reduced but not solved in the intercept chain: median 2.3 cm, up to 5.6 cm, 3 s after release.
-- The SAC policies still change their actions about 2.5× more than the scripted interceptor (mostly during the final
-  alignment over the mast).
+- Policy A still has about 1.6× the joint sign flips of the scripted interceptor; most of what is left is the impact of the
+  jaws closing on the mast, which the scripted interceptor shows too.
 - The hull vibrating in the gripper after a fast catch is a simulation result (stiff jaw contact); whether the real gripper
   does the same is not known.
-- Not yet modelled: AprilTag occlusion and dropped frames (noise and latency are modelled in the intercept task); the full
-  BODY2 hydrodynamics and legs; the real hull and mast.
+- Occlusion is modelled only for the intercept, not for the drag-and-turn step; the 97 % intercept → drag chain uses the v4
+  intercept policy and an unoccluded overhead camera. The wrist camera's own view is not ray-tested (the jaws could hide the
+  mast top), and the camera and tag positions are assumptions for a setup that does not exist yet.
+- Not yet modelled: dropped frames other than occlusion, lighting and water reflections; the full BODY2 hydrodynamics and
+  legs; the real hull and mast.
 
 ## Usage
 
@@ -215,6 +290,9 @@ python eval/chain.py reach=sac grasp=sac drag=sac swim         # 50-episode stat
 python train/train_sac.py 200000 0 grasp 30000                 # train step 2 with 30 k demo steps
 
 python train/train_sac.py 300000 0 icpt_kf 30000 _v4           # intercept, A (Kalman filter); icpt_hist = B; last arg = run tag
+python train/train_sac.py 300000 0 icpt_kf_o3 30000            # two tags + occlusion, filter 0.8, penalty 2.0 (_o2 / _ow2: stage8)
+python eval/select_smooth.py results/stage9_smooth/kf_occl/sac_seed0_demo30000           # -> smooth_model.zip
+python eval/intercept_ab.py results/stage9_smooth/kf_occl/sac_seed0_demo30000 --kf-tuned --model=smooth_model.zip
 python eval/intercept_ab.py results/stage5_intercept/kf/sac_seed0_demo30000_v4 --kf-tuned   # per-speed + robustness test
 python eval/intercept_ab.py scripted --kf-tuned                # same test for the scripted interceptor
 MUJOCO_GL=glfw python eval/intercept_gif.py render 0.15 0.20 7 /tmp/ep.npz model=results/stage5_intercept/kf/sac_seed0_demo30000_v4/best_model.zip
@@ -238,7 +316,7 @@ In WSL, `export GALLIUM_DRIVER=d3d12` makes the viewer use the GPU.
 | `envs/ik.py` | IK and TCP definition |
 | `envs/reset_env.py`, `grasp_env.py`, `drag_env.py` | Gymnasium environments for steps 1–3, each with a scripted reference policy |
 | `envs/residual.py`, `envs/state_io.py` | residual-RL wrapper; state hand-over between skills |
-| `envs/intercept_env.py`, `envs/kalman.py` | intercept task (camera noise, latency, wall bounce, swim-back) with scripted interceptor; boat Kalman filter |
+| `envs/intercept_env.py`, `envs/kalman.py` | intercept task (camera noise, latency, occlusion, two tags, wrist camera, proprioception, wall bounce, swim-back, action filter) with scripted interceptor; multi-sensor boat Kalman filter |
 | `train/` | SAC training (demonstrations, residual), training curves |
 | `eval/` | full-chain evaluation and viewer, key frames, GIF, hand-over start states; intercept evaluation (`intercept_*.py`), intercept → drag chain (`intercept_chain*.py`, `collect_intercept_states.py`), debug GIFs, comparison plot |
 | `results/` | models used by the chain (`best_model.zip`), curves, evaluation logs, start states |

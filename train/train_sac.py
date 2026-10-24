@@ -6,6 +6,7 @@
     python train/train_sac.py 200000 0 grasp 20000     # 第 3 个参数选环境：reach / grasp / drag / grasp_res / drag_res /
                                                        #   icpt_kf / icpt_hist（拦截，A / B 方案）/ icpt_kf_res / icpt_hist_res（拦截 + 残差）
                                                        #   drag_icpt（拦截之后的拖动转向）
+                                                       #   icpt_{kf,hist}_o（顶部相机遮挡）/ icpt_{kf,hist}_ow（遮挡 + 腕部相机）
                                                        # 第 4 个参数：先放进回放池的示范步数（默认 0 = 纯 RL）
 示范数据（10-22 加）：阶段 2 纯 SAC 训练 9.5 万步成功率一直是 0 %（夹取要"对准 → 慢慢下降 → 合拢"一连串动作，
 随机探索碰不上；乱动碰船又被重罚，于是学成"别靠近"）。做法：训练前用脚本策略跑 N 步，把这些转移 (s, a, r, s', done)
@@ -60,13 +61,32 @@ Env, scripted = {"reach": (ReachEnv, scripted_action), "grasp": (GraspEnv, scrip
                  # 拦截之后的拖动转向（10-23）：起点 = 拦截成功（夹住、停稳）时的状态，新的手臂控制（舵机目标线性过渡等）
                  "drag_icpt": (lambda: DragEnv(start_states="results/stage6_intercept_drag/start_states_intercept.npz", smooth=True),
                                scripted_drag),
+                 # 拦截 + 顶部相机遮挡（_o）/ 遮挡 + 腕部相机（_ow）（10-24）：观测多了两个相机的读数状态，KF 加了延迟补偿和本体感觉
+                 "icpt_kf_o": (lambda: InterceptEnv(predictor="kf", v_range=(0.0, V_MAX), occlusion=True, two_tags=False), scripted_intercept),
+                 "icpt_hist_o": (lambda: InterceptEnv(predictor="history", v_range=(0.0, V_MAX), occlusion=True, two_tags=False), scripted_intercept),
+                 "icpt_kf_ow": (lambda: InterceptEnv(predictor="kf", v_range=(0.0, V_MAX), occlusion=True, wrist=True, two_tags=False), scripted_intercept),
+                 "icpt_hist_ow": (lambda: InterceptEnv(predictor="history", v_range=(0.0, V_MAX), occlusion=True, wrist=True, two_tags=False), scripted_intercept),
+                 # stage7 的设定是一个标签：上面四个任务训练时还是单标签（10-24 改成默认两个标签之后，这里显式写 two_tags=False）
+                 # 两个标签 + 动作低通滤波 0.6 + 边界处不往外推（10-24，stage8）
+                 "icpt_kf_o2": (lambda: InterceptEnv(predictor="kf", v_range=(0.0, V_MAX), occlusion=True, action_filter=0.6), scripted_intercept),
+                 "icpt_hist_o2": (lambda: InterceptEnv(predictor="history", v_range=(0.0, V_MAX), occlusion=True, action_filter=0.6), scripted_intercept),
+                 "icpt_kf_ow2": (lambda: InterceptEnv(predictor="kf", v_range=(0.0, V_MAX), occlusion=True, wrist=True, action_filter=0.6), scripted_intercept),
+                 "icpt_hist_ow2": (lambda: InterceptEnv(predictor="history", v_range=(0.0, V_MAX), occlusion=True, wrist=True, action_filter=0.6), scripted_intercept),
+                 # stage9（10-24）：同 stage8 只遮挡，但平滑更强：动作滤波 0.8、动作变化惩罚 2.0（stage8 是 0.6 / 0.5，关节抖动仍是脚本的 2 倍）
+                 "icpt_kf_o3": (lambda: InterceptEnv(predictor="kf", v_range=(0.0, V_MAX), occlusion=True, action_filter=0.8, smooth_penalty=2.0), scripted_intercept),
+                 "icpt_hist_o3": (lambda: InterceptEnv(predictor="history", v_range=(0.0, V_MAX), occlusion=True, action_filter=0.8, smooth_penalty=2.0), scripted_intercept),
                  "icpt_kf_res": (lambda: _icpt_res("kf"), None),
                  "icpt_hist_res": (lambda: _icpt_res("history"), None)}[TASK]
 OUT = ("results/" + {"reach": "stage1_reach", "grasp": "stage2_grasp", "drag": "stage3_drag",
                      "grasp_res": "stage2_grasp", "drag_res": "stage3_drag", "grasp_res_chain": "stage2_grasp",
                      "icpt_kf": "stage5_intercept/kf", "icpt_hist": "stage5_intercept/history",
                      "icpt_kf_res": "stage5_intercept/kf_residual", "icpt_hist_res": "stage5_intercept/history_residual",
-                     "drag_icpt": "stage6_intercept_drag"}[TASK]
+                     "drag_icpt": "stage6_intercept_drag",
+                     "icpt_kf_o": "stage7_wrist/kf_occl", "icpt_hist_o": "stage7_wrist/history_occl",
+                     "icpt_kf_ow": "stage7_wrist/kf_occl_wrist", "icpt_hist_ow": "stage7_wrist/history_occl_wrist",
+                     "icpt_kf_o2": "stage8_two_tags/kf_occl", "icpt_hist_o2": "stage8_two_tags/history_occl",
+                     "icpt_kf_ow2": "stage8_two_tags/kf_occl_wrist", "icpt_hist_ow2": "stage8_two_tags/history_occl_wrist",
+                     "icpt_kf_o3": "stage9_smooth/kf_occl", "icpt_hist_o3": "stage9_smooth/history_occl"}[TASK]
        + ("/residual_chain" if TASK.endswith("_chain") else "/residual" if TASK.endswith("_res") and not TASK.startswith("icpt") else "") + f"/sac_seed{SEED}" + (f"_demo{N_DEMO}" if N_DEMO else "") + TAG)
 os.makedirs(OUT, exist_ok=True)
 import json
@@ -104,7 +124,7 @@ if N_DEMO:
         noisy = ep % 2 == 1                                   # 奇数回合加噪声
         ep += 1
         while True:
-            a = scripted(denv.kf_obs()) if TASK == "icpt_hist" else scripted(obs)   # B：脚本看后台 KF 的观测
+            a = scripted(denv.kf_obs()) if TASK.startswith("icpt_hist") else scripted(obs)   # B：脚本看后台 KF 的观测
             if noisy:
                 a = np.clip(a + rng.normal(0, 0.3, a.shape), -1, 1)
             nobs, r, term, trunc, info = denv.step(a)
