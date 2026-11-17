@@ -11,6 +11,7 @@
 
   <worldbody>
     <light pos="0 0 3.5" dir="0 0 -1" directional="true"/>
+    <camera name="top_cam" mode="fixed" pos="0.44 0 1.0" fovy="42"/>
 
     <!-- 桌面：缸放在上面，只为了看着有参照 -->
     <geom name="table" type="plane" pos="0 0 -0.165" size="0 0 0.05" rgba="0.35 0.35 0.35 1"/>
