@@ -60,6 +60,24 @@ Closed loop with the ONNX Runtime backend: 155/180 (86.1 %), PyTorch 154/180 (85
 Pre-processing takes about 2 ms and post-processing 0.4 ms per inference, so the whole
 image-to-action path fits in the 50 ms control period with a wide margin.
 
+### C++ runtime with CUDA pre-processing (`act/cpp/`)
+
+A stand-alone C++ program without Python or PyTorch: raw camera frames (uint8, HWC) are copied to the GPU from
+pinned memory, a CUDA kernel normalises them and converts to CHW, TensorRT runs the engine on the same
+CUDA stream, and the 20×5 action chunk is copied back and de-normalised.
+
+| Stage (300 runs, GPU idle) | Mean | p95 |
+|---|---|---|
+| Upload two frames + CUDA pre-processing | 0.16 ms | 0.22 ms |
+| TensorRT inference | 5.29 ms | 5.72 ms |
+| Download + de-normalise | 0.06 ms | 0.09 ms |
+| **Raw frames → actions, one synchronisation at the end** | **5.57 ms** | **6.09 ms** |
+
+Maximum difference to the Python pipeline: 3.6e-07 after pre-processing, 9.7e-07 on the final actions.
+The same path in Python (LeRobot pre-processing, PyTorch, post-processing) takes about 17.5 ms.
+The same pre-processing on one CPU thread takes 0.33 ms, so at this image size the gain of the GPU kernel
+itself is small; the point is that the frames never leave the GPU between upload and inference.
+
 ### Where the time goes (PyTorch, `act/profile_torch.py`)
 
 | Module | Share of one inference |
@@ -103,7 +121,8 @@ so the difference between 35 % and 40 % is not meaningful.
   latent variable carries no information and training is effectively L1 regression.
 - TensorRT: the GTX 1080 Ti (Pascal) is rejected by TensorRT 10 and 11. 8.6.1 works in a separate
   Python 3.10 environment with cuDNN 8 after constant folding of the exported graph. FP16 gives no speed-up on this card.
-- Latency was measured on a desktop GPU from Python. No C++ runtime and no embedded target yet.
+- Latency was measured on a desktop GPU. The C++ runtime processes one recorded frame; it is not yet connected
+  to the simulator or to ROS 2, and there is no embedded target.
 
 ## Files
 
@@ -121,6 +140,9 @@ so the difference between 35 % and 40 % is not meaningful.
 | `export_onnx.py` | export the network (inputs `top`, `wrist`, `state`), compare with PyTorch |
 | `trt_rs.sh`, `trt_data.py`, `trt_bench.py` | constant folding, TensorRT FP32/FP16 engines, numeric check, timing |
 | `bench_torch_ort.py`, `profile_torch.py` | PyTorch and ONNX Runtime timing; per-module and per-operator profile |
+| `dump_raw_sample.py` | one raw frame, normalisation constants and Python reference output as binary files for the C++ program |
+| `cpp/preprocess.cu`, `cpp/main.cpp` | CUDA pre-processing kernel; C++ TensorRT inference with numeric check and timing |
+| `cpp/install_tools.sh`, `cpp/build_run.sh` | nvcc, g++ 13 and TensorRT headers without root; build and run |
 | `make_visuals.py`, `plot_loss.py` | loss curve, dataset samples, episode recordings |
 
 ## Reproduce
