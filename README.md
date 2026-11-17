@@ -255,6 +255,32 @@ from 97 % to 92 %.
 - *"wrist" in a path.* The experiment folder is called `stage7_wrist`, so a check for "wrist" in a model path turned the
   wrist camera on for the occluded-only models too. The evaluation now checks for `occl_wrist`.
 
+## Camera-only ACT policy and deployment
+
+The intercept step was also learned from images alone. An ACT policy (LeRobot) sees two 240×320 cameras
+(overhead and wrist) and the joint angles, without the boat pose, the tags or the Kalman filter.
+The stage-9 SAC policy is the teacher; one DAgger round follows the imitation training.
+
+![ACT grasping a boat moving at 13 cm/s; left: overhead camera, right: wrist camera](docs/act/act_success_1.gif)
+
+| | Scripted | SAC teacher | ACT, imitation only | ACT + DAgger |
+|---|---|---|---|---|
+| Success, 6 speed bins × 30 episodes | 156/180 (86.7 %) | 177/180 (98.3 %) | 135/180 (75.0 %) | 154/180 (85.6 %) |
+| Wall hits per episode | 0.52 | 0.10 | 0.44 | 0.33 |
+
+The network was exported to ONNX and run with ONNX Runtime and TensorRT on a GTX 1080 Ti:
+
+| | PyTorch | ONNX Runtime (CUDA) | TensorRT 8.6.1 |
+|---|---|---|---|
+| Inference time | 15.1 ms | 6.4 ms | 6.2 ms |
+| Max. difference to PyTorch | – | 2.0e-06 | 1.7e-06 |
+| Closed-loop success | 154/180 | 155/180 | – |
+
+With injected inference delay on fast boats (10–20 cm/s), every extra 50 ms costs about 20 points of success
+when the arm waits for the result, and 12–20 points in total up to 150 ms when it keeps executing the previous action chunk.
+
+Details, profiling, the delay curve and limitations: [act/README.md](act/README.md).
+
 ## Limitations
 
 - **Drift after release.** The hull leaves the gripper at 1.5–2.5 cm/s and drifts 2–7 cm in the next 3 s. Measured cause: while
@@ -320,5 +346,6 @@ In WSL, `export GALLIUM_DRIVER=d3d12` makes the viewer use the GPU.
 | `train/` | SAC training (demonstrations, residual), training curves |
 | `eval/` | full-chain evaluation and viewer, key frames, GIF, hand-over start states; intercept evaluation (`intercept_*.py`), intercept → drag chain (`intercept_chain*.py`, `collect_intercept_states.py`), debug GIFs, comparison plot |
 | `results/` | models used by the chain (`best_model.zip`), curves, evaluation logs, start states |
+| `act/` | camera-only ACT policy for the intercept: data collection, training, DAgger, evaluation, ONNX / TensorRT export, timing ([README](act/README.md)) |
 | `tests/` | IK and environment tests, viewers |
 | `docs/` | figures |
