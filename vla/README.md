@@ -184,6 +184,27 @@ Findings:
 - An engine that builds, is smaller and runs faster says nothing about whether the policy still works.
   Only the closed-loop runs showed that the FP16 engines are broken.
 
+### Residual RL on top of the frozen SmolVLA (did not help)
+
+A small SAC policy adds a bounded correction to the SmolVLA action: `a = clip(a_vla + alpha * delta, -1, 1)`.
+SmolVLA (TensorRT engine) stays frozen. The residual policy sees 66 numbers that all come from the cameras and
+the joints: joint angles, the first 10 predicted actions of SmolVLA, the previous executed action and the previous
+SmolVLA action. The reward is the environment reward the SAC teacher was trained with, minus a small penalty on
+the correction. Four parallel environments, about 45 steps/s.
+
+| | Seeds 0–29 | Fresh seeds 1000–1029 |
+|---|---|---|
+| SmolVLA engine without correction | 160/180 | 154/180 |
+| Run 1 (alpha 0.3), 100k / 150k / 200k steps | 150 / 144 / 136 | 145 (200k) |
+| Run 2 (alpha 0.15, larger penalty, small initial noise), 50k / 100k / 150k steps | 143 / 143 / 148 | 142 (150k) |
+
+Both runs are worse than the frozen policy alone, by 7 to 13 points on seeds 0–29 and 5 to 7 on fresh seeds.
+The success rate during training never rose above the starting level (76–85 %), and the mean correction went to
+about 0.45 of its allowed range within the first 5 000 steps and stayed there in both runs. The residual policy has
+no information beyond what SmolVLA already used, and with only two short runs and no tuning of the reward scale or
+of the critic it mostly learned to perturb a policy that was already good. This is a negative result for this
+setup, not for residual RL in general.
+
 ## Limitations
 
 - Closed-loop numbers of 180 episodes have a standard error of about 3 points, and every run draws different
@@ -217,5 +238,6 @@ Findings:
 | `quant.py`, `quant_vla.sh`, `quant_act.sh` | float16 and Q/DQ INT8 models, TensorRT engines, output comparison, closed loop |
 | `quant2.py`, `quant3.py`, `quant_act2.sh`, `quant_act3.sh` | FP16 diagnosis (ONNX Runtime check, mixed precision, one operator type at a time), per-tensor INT8 |
 | `act_server.sh` | ACT trained on the server for the quantisation study |
+| `resid_env.py`, `train_resid.py`, `eval_resid.py`, `resid_run.sh` | residual SAC on top of the frozen SmolVLA engine |
 
 Run from the repository root with `PYTHONPATH=act`; the environment and the teacher are those of `act/`.
