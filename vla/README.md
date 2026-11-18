@@ -18,7 +18,7 @@ experiment: six speed bins × 30 episodes, 20 Hz control (50 ms per step).
 |---|---|---|
 | Imitation only, 400 teacher episodes | 135/180 (75.0 %) | 122/180 (67.8 %) |
 | + one DAgger round, 160 episodes | 154/180 (85.6 %) | 139/180 (77.2 %) |
-| + second DAgger round, biased to fast boats | – | 314/360 (87.2 %) |
+| + second DAgger round, biased to fast boats | 324/360 (90.0 %) | 314/360 (87.2 %) |
 | Final model as TensorRT engine, closed loop | – | 314/360 (87.2 %) |
 | Trained parameters | all | 100 M (action expert), VLM frozen |
 | Inference, PyTorch | 15.1 ms | 74.4 ms (10 steps), 32.1 ms (3 steps) |
@@ -141,13 +141,57 @@ What had to be solved:
 - TensorRT 11 no longer has the FP16 builder flag; a half-precision engine would need a float16 ONNX model.
   Not done. `torch.autocast` to float16 made PyTorch slower (85 ms against 74 ms).
 
+### Quantisation on the RTX 4090 (TensorRT 11.5)
+
+TensorRT 11 has no FP16 or INT8 builder flags and no calibrators. Networks are strongly typed, so the precision
+has to be written into the ONNX model: float16 weights and operators for FP16, Q/DQ nodes from a calibration run
+for INT8. 200 frames from the demonstrations were used (the last 20 only for comparing outputs).
+
+ACT. A separate ACT was trained on the server for this study (820 episodes, 40 000 steps in 33 minutes;
+checkpoints at 10k/20k/30k/40k: 67.2 %, 83.9 %, 79.4 %, 88.3 %). Closed loop, re-planning at every step:
+
+| Runs as | Seeds 0–29 | Seeds 1000–1029 | Together | Network / image → action | Engine |
+|---|---|---|---|---|---|
+| PyTorch | 159/180 | 156/180 | 315/360 (87.5 %) | 3.2 ms / 3.6 ms | – |
+| TensorRT FP32 | 159/180 | 150/180 | 309/360 (85.8 %) | 1.5 ms / 2.0 ms | 159 MB |
+| TensorRT INT8, convolutions only, percentile calibration | 162/180 | 163/180 | 325/360 (90.3 %) | 1.5 ms / 1.9 ms | 120 MB |
+| TensorRT INT8, convolutions only, min-max calibration | 155/180 | – | – | 1.5 ms / 1.9 ms | 120 MB |
+| TensorRT FP16, whole model | 4/180 | – | – | 0.7 ms / 1.2 ms | 67 MB |
+
+SmolVLA (final model, 3 flow-matching steps):
+
+| Runs as | Success | Engine |
+|---|---|---|
+| TensorRT FP32 | 314/360 (87.2 %) | 1517 MB |
+| TensorRT FP16, whole model | 0/180 | 779 MB |
+| TensorRT INT8, convolutions and Gemm, min-max calibration | 0/180 | 1274 MB |
+
+Findings:
+
+- INT8 on the ACT convolutions keeps the success rate but gives no speed-up. On this GPU the network already
+  takes 1.5 ms and the convolutions are no longer what limits it.
+- The FP16 engines are twice as fast, half the size, and useless (4/180 and 0/180). The float16 ONNX model itself
+  is correct: ONNX Runtime reproduces the float32 output to 5e-04 on average, and the automatic mixed-precision
+  tool accepts all 1391 nodes as float16. Only the TensorRT engine built from it is wrong (mean error 0.45 on
+  actions in about ±2). Keeping one operator type at a time in float32 (Add, Mul, Conv, MatMul, Relu,
+  LayerNormalization, Softmax, Gemm, ...) does not repair it. The cause was not found.
+- Things that had to be fixed before TensorRT accepted the models: the float16 converter leaves constants stored as
+  node attributes in float32 (mixed-type Div); the quantiser stores biases as int32 Q/DQ (`QuantizeBias: False`);
+  per-channel conv weights could not be fused with the Mul of the frozen batch norm (per-tensor scales instead);
+  Q/DQ on MatMul with two variable inputs fails inside the TensorRT optimiser.
+- On the GTX 1080 Ti with TensorRT 8.6.1 the FP16 engine of ACT was numerically identical to FP32, i.e. that
+  builder did not actually lower the precision. The old flag hid a decision that is now explicit.
+- An engine that builds, is smaller and runs faster says nothing about whether the policy still works.
+  Only the closed-loop runs showed that the FP16 engines are broken.
+
 ## Limitations
 
 - Closed-loop numbers of 180 episodes have a standard error of about 3 points, and every run draws different
   random noise for the flow-matching start. Differences such as 154 against 160 are not meaningful.
 - One training run. The execution studies were done on the 10 000-step model and their checkpoints were not
   selected on separate episodes; only the final model was also evaluated on fresh seeds.
-- The ACT model has had one DAgger round and SmolVLA two, so the last rows of the comparison are not like for like.
+- The quantisation study uses a separate ACT model trained on the server (the uplink was too slow to transfer the
+  desktop model), and only the simplest quantisation recipes were tried.
 - Simulation only. The execution studies count inference below 50 ms as no delay, as in the ACT experiments.
 - Only the default fine-tuning mode was used (action expert trained, VLM frozen), with 240×320 images that the
   model pads to 512×512. Unfreezing the VLM or training at higher resolution was not tried.
@@ -169,5 +213,9 @@ What had to be solved:
 | `export_vla.py` | export the full inference to ONNX, compare with PyTorch |
 | `ort_trt_bench.py` | ONNX Runtime timing, TensorRT engine build and timing (separate environment) |
 | `final_vla.sh` | timing, export, engine build and closed-loop checks for the final model |
+| `calib_dump.py` | calibration inputs for quantisation, for ACT or SmolVLA |
+| `quant.py`, `quant_vla.sh`, `quant_act.sh` | float16 and Q/DQ INT8 models, TensorRT engines, output comparison, closed loop |
+| `quant2.py`, `quant3.py`, `quant_act2.sh`, `quant_act3.sh` | FP16 diagnosis (ONNX Runtime check, mixed precision, one operator type at a time), per-tensor INT8 |
+| `act_server.sh` | ACT trained on the server for the quantisation study |
 
 Run from the repository root with `PYTHONPATH=act`; the environment and the teacher are those of `act/`.

@@ -44,6 +44,22 @@ Three things mattered:
    against 76 % from `lerobot-eval`. The cause was the gym-aloha default of 300 steps per episode; the official
    evaluation uses 400. With 400 steps: 84 % for both PyTorch and ONNX Runtime.
 
+### Second DAgger round, aimed at fast boats
+
+160 more DAgger episodes, 120 of them with boats at 10–20 cm/s, plus 100 teacher demonstrations of fast boats;
+all data merged (820 episodes), training continued from the model above (`act/dagger2.sh`).
+
+| Checkpoint | Seeds 0–29 | Fresh seeds 1000–1029 |
+|---|---|---|
+| After round 1 | 154/180 (85.6 %) | – |
+| Round 2, + 10 000 steps | 164/180 (91.1 %) | 160/180 (88.9 %) |
+| Round 2, + 20 000 steps | 139/180 (77.2 %) | – |
+
+Together 324/360 (90.0 %) for the 10 000-step checkpoint; the fresh seeds were never used to choose it.
+The fastest bin goes from 20/30 to 25/30 and 28/30. The second checkpoint of the same run is 14 points worse
+although its training loss is lower, so the checkpoint has to be chosen by closed-loop evaluation.
+The same pipeline with SmolVLA is in [`vla/`](../vla/README.md).
+
 ### Inference latency
 
 Same input frame, 20 warm-up and 200 timed runs, GPU otherwise idle. Network only (no pre/post-processing).

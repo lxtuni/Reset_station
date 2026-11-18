@@ -53,6 +53,24 @@ if args.backend == "onnx":
         feed = {key.split(".")[-1]: b[key].float().cpu().numpy() for key in IMG_KEYS}
         feed["state"] = b["observation.state"].float().cpu().numpy()
         return torch.from_numpy(sess.run(None, feed)[0]).cuda()
+elif args.backend == "trt":
+    # TensorRT 引擎（FP32 / FP16 / INT8 都走这里）。输入输出直接用显卡上 PyTorch 张量的地址，不经过 CPU。
+    import tensorrt as trt
+    _rt = trt.Runtime(trt.Logger(trt.Logger.ERROR))
+    _eng = _rt.deserialize_cuda_engine(open(args.engine, "rb").read())
+    _ctx = _eng.create_execution_context()
+    _out = torch.empty(1, policy.config.chunk_size, 5, device="cuda")
+    print("TensorRT", trt.__version__, "引擎：", args.engine)
+
+    def net(b):
+        keep = []                                          # 推理期间这些张量不能被释放
+        for key in IMG_KEYS + ["observation.state"]:
+            t = b[key].to("cuda", torch.float32).contiguous(); keep.append(t)
+            _ctx.set_tensor_address(key.split(".")[-1], t.data_ptr())
+        _ctx.set_tensor_address("actions", _out.data_ptr())
+        _ctx.execute_async_v3(torch.cuda.current_stream().cuda_stream)
+        torch.cuda.synchronize()
+        return _out.clone()
 else:
     def net(b):
         return policy.predict_action_chunk(b)
@@ -62,7 +80,8 @@ T = {"pre": [], "infer": [], "post": []}
 
 def infer(top, wrist, q):
     t0 = time.perf_counter()
-    b = pre({"observation.images.top": to_img(top), "observation.images.wrist": to_img(wrist),
+    # 相机的名字取自模型自己的配置（第一个是顶部相机，第二个是腕部相机），这样换了数据集里的相机名也能用
+    b = pre({IMG_KEYS[0]: to_img(top), IMG_KEYS[1]: to_img(wrist),
              "observation.state": torch.from_numpy(q).unsqueeze(0), "task": [""]})
     torch.cuda.synchronize(); t1 = time.perf_counter()
     with torch.inference_mode():

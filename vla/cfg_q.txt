@@ -1,0 +1,2 @@
+q_vla_fp16|vla_d2/005000|--bins --exec_steps 1 --num_steps 3 --backend trt --engine outputs/quant_vla/fp16.engine
+q_vla_int8|vla_d2/005000|--bins --exec_steps 1 --num_steps 3 --backend trt --engine outputs/quant_vla/int8.engine

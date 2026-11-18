@@ -33,7 +33,7 @@ for _ in range(10):
     env.step(np.zeros(5, np.float32))
 top, wrist = cams()
 f = lambda x: torch.from_numpy(x).permute(2, 0, 1).float().div(255).unsqueeze(0)
-b = pre({"observation.images.top": f(top), "observation.images.wrist": f(wrist),
+b = pre({IMG_KEYS[0]: f(top), IMG_KEYS[1]: f(wrist),
          "observation.state": torch.from_numpy(joints(env)).unsqueeze(0), "task": [""]})
 imgs = [b[k].float().clone() for k in IMG_KEYS]; st = b[OBS_STATE].float().clone()
 np.savez(f"{OUT}/sample.npz", **{n: x.cpu().numpy() for n, x in zip(NAMES, imgs)}, state=st.cpu().numpy())
