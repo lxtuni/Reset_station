@@ -285,16 +285,20 @@ Details, profiling, the delay curve and limitations: [act/README.md](act/README.
 
 The same pipeline was repeated with SmolVLA (450 M parameters, fine-tuned from `lerobot/smolvla_base` on an RTX 4090):
 
+![SmolVLA grasping a boat moving at 16 cm/s; left: overhead camera, right: wrist camera](docs/vla/smolvla_success.gif)
+
 | | ACT | SmolVLA |
 |---|---|---|
 | Imitation only | 135/180 (75.0 %) | 122/180 (67.8 %) |
 | + one DAgger round | 154/180 (85.6 %) | 139/180 (77.2 %) |
-| Inference, PyTorch | 15.1 ms (GTX 1080 Ti) | 74.4 ms with 10 flow-matching steps, 32.1 ms with 3 (RTX 4090) |
-| Inference, TensorRT | 6.2 ms | 16.5 ms (3 steps) |
+| + second DAgger round, biased to fast boats | – | 314/360 (87.2 %) |
+| Inference, PyTorch | 15.1 ms (GTX 1080 Ti) | 75.7 ms with 10 flow-matching steps, 32.3 ms with 3 (RTX 4090) |
+| Inference, TensorRT | 6.2 ms | 16.6 ms (3 steps) |
 
 With the default 10 flow-matching steps SmolVLA needs more than one control period per inference. Reducing them to 3
-makes re-planning at every step possible and raises the success rate by about 12 points; the TensorRT engine of the
-full inference drives the arm in closed loop at 16.8 ms per image-to-action step (134/180).
+makes re-planning at every step possible and raises the success rate by about 12 points. The TensorRT engine of the
+full inference drives the arm in closed loop at 16.8 ms per image-to-action step with the same success as PyTorch
+(314/360 each, half of the episodes on seeds that were never used for model selection).
 Details: [vla/README.md](vla/README.md).
 
 ## Limitations
