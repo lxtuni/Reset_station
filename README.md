@@ -281,6 +281,22 @@ when the arm waits for the result, and 12–20 points in total up to 150 ms when
 
 Details, profiling, the delay curve and limitations: [act/README.md](act/README.md).
 
+### SmolVLA on the same task
+
+The same pipeline was repeated with SmolVLA (450 M parameters, fine-tuned from `lerobot/smolvla_base` on an RTX 4090):
+
+| | ACT | SmolVLA |
+|---|---|---|
+| Imitation only | 135/180 (75.0 %) | 122/180 (67.8 %) |
+| + one DAgger round | 154/180 (85.6 %) | 139/180 (77.2 %) |
+| Inference, PyTorch | 15.1 ms (GTX 1080 Ti) | 74.4 ms with 10 flow-matching steps, 32.1 ms with 3 (RTX 4090) |
+| Inference, TensorRT | 6.2 ms | 16.5 ms (3 steps) |
+
+With the default 10 flow-matching steps SmolVLA needs more than one control period per inference. Reducing them to 3
+makes re-planning at every step possible and raises the success rate by about 12 points; the TensorRT engine of the
+full inference drives the arm in closed loop at 16.8 ms per image-to-action step (134/180).
+Details: [vla/README.md](vla/README.md).
+
 ## Limitations
 
 - **Drift after release.** The hull leaves the gripper at 1.5–2.5 cm/s and drifts 2–7 cm in the next 3 s. Measured cause: while
@@ -347,5 +363,6 @@ In WSL, `export GALLIUM_DRIVER=d3d12` makes the viewer use the GPU.
 | `eval/` | full-chain evaluation and viewer, key frames, GIF, hand-over start states; intercept evaluation (`intercept_*.py`), intercept → drag chain (`intercept_chain*.py`, `collect_intercept_states.py`), debug GIFs, comparison plot |
 | `results/` | models used by the chain (`best_model.zip`), curves, evaluation logs, start states |
 | `act/` | camera-only ACT policy for the intercept: data collection, training, DAgger, evaluation, ONNX / TensorRT export, timing ([README](act/README.md)) |
+| `vla/` | SmolVLA on the intercept: fine-tuning, DAgger, execution studies, ONNX / TensorRT export ([README](vla/README.md)) |
 | `tests/` | IK and environment tests, viewers |
 | `docs/` | figures |

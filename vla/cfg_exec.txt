@@ -1,0 +1,11 @@
+i10_e2|vla_ft/010000|--bins --exec_steps 2
+i10_e10|vla_ft/010000|--bins --exec_steps 10
+i10_e25|vla_ft/010000|--bins --exec_steps 25
+i10_e50|vla_ft/010000|--bins --exec_steps 50
+r10_sync_e5|vla_ft/010000|--bins --exec_steps 5 --delay 50
+r10_async_e5|vla_ft/010000|--bins --exec_steps 5 --delay 50 --async_exec
+r10_async_e3|vla_ft/010000|--bins --exec_steps 3 --delay 50 --async_exec
+n5_e1|vla_ft/010000|--bins --exec_steps 1 --num_steps 5
+n5_e5|vla_ft/010000|--bins --exec_steps 5 --num_steps 5
+n3_e1|vla_ft/010000|--bins --exec_steps 1 --num_steps 3
+n3_e5|vla_ft/010000|--bins --exec_steps 5 --num_steps 3
