@@ -78,7 +78,32 @@ else:
 T = {"pre": [], "infer": [], "post": []}
 
 
+if args.backend == "remote":
+    # 推理在另一台设备上（香橙派）：把两张原图和关节角度发过去，收回 20 步真实动作。归一化和还原都在那边做。
+    # --engine 写 “地址:端口”，例如 127.0.0.1:5555（通过 SSH 隧道）
+    import socket, struct
+    _h, _p = args.engine.split(":")
+    _sock = socket.create_connection((_h, int(_p))); _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+    def _recv(k):
+        b = bytearray()
+        while len(b) < k:
+            p = _sock.recv(k - len(b))
+            if not p:
+                raise RuntimeError("推理服务断开了连接")
+            b += p
+        return bytes(b)
+
+
 def infer(top, wrist, q):
+    if args.backend == "remote":
+        t0 = time.perf_counter()
+        _sock.sendall(np.ascontiguousarray(top).tobytes() + np.ascontiguousarray(wrist).tobytes() + q.astype(np.float32).tobytes())
+        buf = _recv(404)
+        dev_ms = struct.unpack("<f", buf[400:])[0]            # 板子上从收到原图到算出动作的时间
+        T["pre"].append((time.perf_counter() - t0) * 1000 - dev_ms)   # 这一项在远程模式下是“网络传输”的时间
+        T["infer"].append(dev_ms); T["post"].append(0.0)
+        return np.frombuffer(buf[:400], np.float32).reshape(20, 5).copy()
     t0 = time.perf_counter()
     # 相机的名字取自模型自己的配置（第一个是顶部相机，第二个是腕部相机），这样换了数据集里的相机名也能用
     b = pre({IMG_KEYS[0]: to_img(top), IMG_KEYS[1]: to_img(wrist),

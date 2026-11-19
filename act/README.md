@@ -94,6 +94,56 @@ The same path in Python (LeRobot pre-processing, PyTorch, post-processing) takes
 The same pre-processing on one CPU thread takes 0.33 ms, so at this image size the gain of the GPU kernel
 itself is small; the point is that the frames never leave the GPU between upload and inference.
 
+### Orange Pi 5 Pro (RK3588S): CPU, INT8 and NPU (`act/opi/`)
+
+The same ACT (the 90 % model of the second DAgger round) on a board without an NVIDIA GPU: four Cortex-A76 and four
+Cortex-A55 cores, 8 GB of shared memory, a 6-TOPS NPU. No CUDA and no TensorRT, so only the ONNX file carries over.
+
+One inference, same input frame, pre-processed input:
+
+| Variant | Backbone runs on | Transformer runs on | Time | Max. action error |
+|---|---|---|---|---|
+| ONNX Runtime, float32, 4 big cores | CPU | CPU | 192.6 ms | 2.0e-06 |
+| ONNX Runtime, INT8 convolutions | CPU | CPU | 113.2 ms | 0.136 |
+| Backbone on NPU (float16) | NPU | CPU | 104.5 ms | 9.1e-04 |
+| Backbone on NPU (INT8) | NPU | CPU | 83.4 ms | 0.124 |
+| Backbone and transformer on NPU (float16) | NPU | NPU | 60.9 ms | 0.011 |
+
+Actions are in about ±2. Which cores run the CPU version matters: 4 big cores 192.6 ms, 4 small cores 873 ms,
+all 8 cores 228 ms (slower than the big cores alone), one big core 642 ms. On the CPU, convolutions take 65 % of
+the time and Gemm 28 %; on the RTX 4090 the convolutions were not the bottleneck at all.
+
+From the raw camera frames (uint8) to de-normalised actions, everything on the board:
+
+| Variant | Time |
+|---|---|
+| Normalisation in NumPy, the two backbones one after the other | 62.9 ms (p95 93.9) |
+| Normalisation inside the NPU model, the two backbones on two NPU cores in parallel | 48.9 ms (p95 55.5) |
+
+Closed loop with the simulator on the PC and the whole inference on the board (raw frames and joint angles go over
+an SSH tunnel, 20 actions come back), 180 episodes each:
+
+| Setting | Success |
+|---|---|
+| Same model on the desktop GPU | 164/180 (91.1 %) |
+| NPU float16, simulator waits for the board (accuracy check) | 162/180 (90.0 %) |
+| NPU float16, real pace before optimisation: 2 control periods of delay, asynchronous execution | 126/180 (70.0 %) |
+| NPU float16, optimised: 1 control period of delay, asynchronous execution | 140/180 (77.8 %) |
+| ONNX Runtime with INT8 convolutions (run on the PC, same model file) | 157/180 (87.2 %) |
+
+The float16 NPU version loses nothing in accuracy (162 against 164). The 20 points between 90 % and 70 % come from
+latency alone, and making the board faster brings 8 of them back.
+
+What had to be solved: the model is split where `self.backbone(img)["feature_map"]` is called and exported as
+two ONNX files (re-joined they match the original to 2e-06); the runtime library shipped with the board image
+(librknnrt 1.4.0) cannot read models from the current converter (2.5.0), and the vendor's Python package loads
+`/usr/lib/librknnrt.so` by absolute path, so a newer library in the home directory is called directly through its
+C API with ctypes (`rknn_c.py`) instead of changing system files.
+
+Caveats: the board's CPU governor is `ondemand` (600 MHz when idle, 2256 MHz maximum), so timings vary between
+runs; inside the inference server the optimised variant measured 68.9 ms (p95 74.5) rather than 48.9 ms, so
+"1 control period of delay" is slightly optimistic. The INT8 NPU variant was not validated in closed loop.
+
 ### Where the time goes (PyTorch, `act/profile_torch.py`)
 
 | Module | Share of one inference |
@@ -137,8 +187,8 @@ so the difference between 35 % and 40 % is not meaningful.
   latent variable carries no information and training is effectively L1 regression.
 - TensorRT: the GTX 1080 Ti (Pascal) is rejected by TensorRT 10 and 11. 8.6.1 works in a separate
   Python 3.10 environment with cuDNN 8 after constant folding of the exported graph. FP16 gives no speed-up on this card.
-- Latency was measured on a desktop GPU. The C++ runtime processes one recorded frame; it is not yet connected
-  to the simulator or to ROS 2, and there is no embedded target.
+- The C++ runtime processes one recorded frame; it is not yet connected to the simulator or to ROS 2.
+  The embedded board was tested with the simulator on a PC, not with real cameras or motors.
 
 ## Files
 
@@ -159,6 +209,10 @@ so the difference between 35 % and 40 % is not meaningful.
 | `dump_raw_sample.py` | one raw frame, normalisation constants and Python reference output as binary files for the C++ program |
 | `cpp/preprocess.cu`, `cpp/main.cpp` | CUDA pre-processing kernel; C++ TensorRT inference with numeric check and timing |
 | `cpp/install_tools.sh`, `cpp/build_run.sh` | nvcc, g++ 13 and TensorRT headers without root; build and run |
+| `opi/bench_opi.py`, `opi/bench_models.py`, `opi/quant_opi.py` | Orange Pi: CPU timing per core set, per-operator profile, INT8 models |
+| `opi/split_export.py`, `opi/convert_rknn.py`, `opi/convert_head.py`, `opi/convert_rknn2.py` | split ACT into backbone and transformer; convert to RKNN (float16, INT8, with built-in normalisation) |
+| `opi/rknn_c.py`, `opi/bench_npu.py`, `opi/bench_full_npu.py`, `opi/bench_opt.py` | ctypes binding to the NPU runtime C API; NPU timing and accuracy checks |
+| `opi/serve_opi.py`, `opi/start_serve.sh` | inference server on the board for closed-loop tests (`eval_act.py --backend remote`) |
 | `make_visuals.py`, `plot_loss.py` | loss curve, dataset samples, episode recordings |
 
 ## Reproduce

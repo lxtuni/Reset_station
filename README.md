@@ -281,6 +281,10 @@ when the arm waits for the result, and 12–20 points in total up to 150 ms when
 
 Details, profiling, the delay curve and limitations: [act/README.md](act/README.md).
 
+On an Orange Pi 5 Pro (RK3588S, no NVIDIA GPU) the same ACT takes 192.6 ms on the CPU and 60.9 ms with backbone and
+transformer on the NPU; with the simulator on a PC and the inference on the board the closed-loop success is 162/180,
+against 164/180 on the desktop GPU.
+
 ### SmolVLA on the same task
 
 The same pipeline was repeated with SmolVLA (450 M parameters, fine-tuned from `lerobot/smolvla_base` on an RTX 4090):

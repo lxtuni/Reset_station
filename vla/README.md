@@ -205,6 +205,30 @@ no information beyond what SmolVLA already used, and with only two short runs an
 of the critic it mostly learned to perturb a policy that was already good. This is a negative result for this
 setup, not for residual RL in general.
 
+### Why the policy fails, and two more reward-only attempts
+
+Failure analysis of the final SmolVLA (`fail_analysis.py`, `stuck_analysis.py`, 360 episodes): 76 % of the failed
+episodes never grasp. The gripper gets within 2.7 cm of the mast, misses, and then stays 8–10 cm away until the
+time-out. In that phase the direction of the SmolVLA action agrees with the teacher's action at only +0.17
+(cosine; +0.76 during a normal approach): the teacher lifts and re-aims, SmolVLA keeps pushing towards the mast.
+The missing piece is a behaviour the policy has never seen.
+
+| Reward-only method | Result (baseline 314/360) |
+|---|---|
+| Self-imitation: 1 200 own roll-outs with exploration, keep the 795 successes, continue training (`collect_self.py`) | 308/360 and 304/360 |
+| Learned selector (DQN) that every 0.5 s lets SmolVLA continue or inserts one of four hand-written escape motions (`prim_env.py`) | 303/360 |
+
+Neither is better than the frozen policy. Random pushes rescued 28 % of stuck episodes during collection, but their
+directions average out in training; the selector sees only joint angles and SmolVLA's own outputs and cannot tell a
+stuck arm from one still chasing a fast boat. Changing the start noise of the flow matching moves the action by
+13–23 % in size and hardly in direction (`noise_sens.py`), so steering in noise space cannot produce the missing
+behaviour either.
+
+In progress when this was written: a third DAgger round restricted to stuck states (teacher labels, `collect_stuck.py`;
+after hand-over the teacher finishes 81 % of those episodes, SmolVLA alone 67 %), and a search-and-distil variant
+that replays failed episodes with the same seed, inserts an escape motion at different times and keeps the first
+replay that succeeds (`collect_search.py`; 15 of the first 19 failures were rescued this way).
+
 ## Limitations
 
 - Closed-loop numbers of 180 episodes have a standard error of about 3 points, and every run draws different
@@ -239,5 +263,11 @@ setup, not for residual RL in general.
 | `quant2.py`, `quant3.py`, `quant_act2.sh`, `quant_act3.sh` | FP16 diagnosis (ONNX Runtime check, mixed precision, one operator type at a time), per-tensor INT8 |
 | `act_server.sh` | ACT trained on the server for the quantisation study |
 | `resid_env.py`, `train_resid.py`, `eval_resid.py`, `resid_run.sh` | residual SAC on top of the frozen SmolVLA engine |
+| `fail_analysis.py`, `stuck_analysis.py`, `noise_sens.py` | how episodes fail; student against teacher actions when stuck; sensitivity to the start noise |
+| `collect_self.py`, `self_rl.sh` | self-imitation with exploration |
+| `prim_env.py`, `train_prim.py`, `eval_prim.py`, `prim_run.sh` | DQN selector over escape motions |
+| `collect_stuck.py`, `dagger3.sh`, `dagger3b.sh` | third DAgger round on stuck states |
+| `collect_search.py`, `search_rl.sh`, `search_rl2.sh` | search with seed replay, then distillation |
+| `make_demo.py` | annotated recording of one episode (scene view, both cameras, calls per step) |
 
 Run from the repository root with `PYTHONPATH=act`; the environment and the teacher are those of `act/`.

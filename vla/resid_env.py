@@ -44,11 +44,16 @@ class ResidEnv(gym.Env):
 
     def _vla(self):
         torch = self.torch
+        if getattr(self, "noise_fn", None) is not None:                    # 让去噪的起点可复现（搜索时同一个种子要能重放）
+            self.noise = self.noise_fn()
         top, wrist = self.cams(); q = self.joints(self.env)
+        self.last_top, self.last_wrist, self.last_q = top, wrist, q.astype(np.float32)   # 给数据采集脚本用
         f = lambda x: torch.from_numpy(x).permute(2, 0, 1).float().div(255).unsqueeze(0)
         b = self.pre({K1: f(top), K2: f(wrist), "observation.state": torch.from_numpy(q).unsqueeze(0), "task": [TASK]})
         src = {"cam1": b[K1], "cam2": b[K2], "state": b["observation.state"], "tokens": b[self.LT], "mask": b[self.LM],
-               "noise": torch.randn(1, self.chunk, self.adim, device="cuda")}
+               # 去噪的起点。默认是随机数；如果外面指定了 self.noise，就用指定的（“在噪声空间里做强化学习”时由小网络给出）
+               "noise": (torch.as_tensor(self.noise, dtype=torch.float32, device="cuda").reshape(1, self.chunk, self.adim)
+                         if getattr(self, "noise", None) is not None else torch.randn(1, self.chunk, self.adim, device="cuda"))}
         keep = []
         for n in self._names:
             if n == "actions":
@@ -62,6 +67,7 @@ class ResidEnv(gym.Env):
     def _obs(self):
         q, acts = self._vla()
         self.a_vla = acts[0].astype(np.float32)
+        self.chunk10 = acts[9].astype(np.float32)                           # SmolVLA 预测的第 10 步动作（给方案 F 的观测用）
         return np.concatenate([q, acts[:10].ravel(), self.prev_a, self.prev_vla]).astype(np.float32)
 
     def reset(self, *, seed=None, options=None):
@@ -81,6 +87,7 @@ class ResidEnv(gym.Env):
         _, r, term, trunc, info = self.env.step(a)
         r = float(r) - self.pen * float(np.square(delta).sum())             # 修正量本身有一点代价：没必要就别改
         self.prev_a, self.prev_vla = a, self.a_vla
+        self.last_info = info                                               # 完整的环境信息（含真实状态），只给分析脚本用
         info = {"success": bool(info["success"]), "wall_hits": info["wall_hits"], "da2": info["da2"], "steps": self.env.steps}
         obs = self._obs() if not (term or trunc) else np.zeros(66, np.float32)
         return obs, r, bool(term), bool(trunc), info
