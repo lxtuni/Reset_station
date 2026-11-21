@@ -77,14 +77,14 @@ class ResidEnv(gym.Env):
             self.env.v_range = self.fixed_v
         else:                                                               # 训练时一半回合专门抽快船
             self.env.v_range = (0.10, 0.20) if self.rng.random() < self.fast_bias else (0.0, 0.20)
-        self.env.reset(seed=seed if seed is not None else int(self.rng.integers(1 << 30)))
+        self.last_env_obs, _ = self.env.reset(seed=seed if seed is not None else int(self.rng.integers(1 << 30)))   # 含真实状态，只给打分网络用
         self.prev_a = np.zeros(5, np.float32); self.prev_vla = np.zeros(5, np.float32)
         return self._obs(), {}
 
     def step(self, delta):
         delta = np.asarray(delta, np.float32)
         a = np.clip(self.a_vla + self.alpha * delta, -1.0, 1.0).astype(np.float32)
-        _, r, term, trunc, info = self.env.step(a)
+        self.last_env_obs, r, term, trunc, info = self.env.step(a)
         r = float(r) - self.pen * float(np.square(delta).sum())             # 修正量本身有一点代价：没必要就别改
         self.prev_a, self.prev_vla = a, self.a_vla
         self.last_info = info                                               # 完整的环境信息（含真实状态），只给分析脚本用

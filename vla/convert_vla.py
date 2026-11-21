@@ -22,10 +22,16 @@ features = {
 shutil.rmtree(out, ignore_errors=True)
 ds = LeRobotDataset.create(repo_id="local/" + out.rstrip("/").split("/")[-1], fps=20, features=features, root=out,
                            robot_type="so101_sim", use_videos=False, image_writer_threads=16)
+import os
 n_ep = n_fr = 0
+weights = []                                              # 每一帧的采样权重（方案 B 用）。回合文件旁边有 .w.npy 就读它，没有就是 1
 for rd in raw_dirs:
     for f in sorted(glob.glob(f"{rd}/ep_*.npz")):
         d = np.load(f)
+        if len(d["action"]) == 0:                         # 空回合（搜索采集里出现过一次）：跳过，否则保存时会报错
+            continue
+        wf = f[:-4] + ".w.npy"
+        weights.append(np.load(wf) if os.path.exists(wf) else np.ones(len(d["action"]), np.float32))
         for t in range(len(d["action"])):
             ds.add_frame({"observation.images.camera1": d["top"][t], "observation.images.camera2": d["wrist"][t],
                           "observation.state": d["state"][t].astype(np.float32), "action": d["action"][t].astype(np.float32),
@@ -35,4 +41,5 @@ for rd in raw_dirs:
         if n_ep % 50 == 0:
             print(f"{n_ep} 个回合，{n_fr} 帧", flush=True)
 ds.finalize()
+np.save(f"{out}/awr_weights.npy", np.concatenate(weights).astype(np.float32))
 print(f"完成：{n_ep} 个回合，{n_fr} 帧，数据集在 {out}")

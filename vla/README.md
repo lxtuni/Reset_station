@@ -224,10 +224,54 @@ stuck arm from one still chasing a fast boat. Changing the start noise of the fl
 13–23 % in size and hardly in direction (`noise_sens.py`), so steering in noise space cannot produce the missing
 behaviour either.
 
-In progress when this was written: a third DAgger round restricted to stuck states (teacher labels, `collect_stuck.py`;
-after hand-over the teacher finishes 81 % of those episodes, SmolVLA alone 67 %), and a search-and-distil variant
-that replays failed episodes with the same seed, inserts an escape motion at different times and keeps the first
-replay that succeeds (`collect_search.py`; 15 of the first 19 failures were rescued this way).
+### What did help: a third DAgger round on stuck states
+
+`collect_stuck.py` lets SmolVLA run, waits until it is stuck, and then records the teacher's actions from that state
+on (after hand-over the teacher finishes 81 % of those episodes, SmolVLA alone 67 %). Continuing training on the old
+data plus these episodes:
+
+| Checkpoint | Seeds 0–29 | Seeds 1000–1029 | Total |
+|---|---|---|---|
+| Before (DAgger round 2) | 157/180 | 157/180 | 314/360 (87.2 %) |
+| Round 3, 2 500 steps | 163/180 | 171/180 | **334/360 (92.8 %)** |
+| Round 3, 5 000 steps | 161/180 | 164/180 | 325/360 (90.3 %) |
+
+This is the only step in this section that uses teacher labels, and the only one that improved the policy.
+
+### Search and distil (reward only)
+
+`collect_search.py` replays every failed episode with the same seed, inserts a hand-written escape motion at
+different times, and keeps the first replay that succeeds. Of 2 200 episodes 395 failed and 296 of those were
+rescued this way (75 %), most often by lifting the gripper at step 60. Training on the old data plus the rescued
+episodes gave 302/360 after 2 500 steps and 314/360 after 5 000 steps: no gain over the baseline. The rescued
+episodes contain an open-loop motion triggered at a fixed time step, which the policy cannot tie to anything it sees.
+
+### Advantage-weighted regression on the action expert (reward only)
+
+The last attempt updates SmolVLA itself with the reward instead of filtering or adding behaviour around it.
+
+1. `collect_awr.py`: 1 200 roll-outs of the current policy with exploration noise and random pushes; successes and
+   failures are both kept, with the reward of every step (749 successes, 148 722 frames).
+2. `awr_weights.py`: a small critic on the simulator state predicts the return (two folds, each scores the episodes
+   it has not seen). The advantage of a frame is the 10-step return plus the critic's value afterwards, minus its
+   value now. The weight is `exp(advantage / std)`, clipped at 20.
+3. `train_awr.py`: the normal `lerobot-train`, with the data loader replaced by one that samples frames in
+   proportion to their weight. This equals the weighted flow-matching loss in expectation and leaves the SmolVLA
+   code untouched. The 820 earlier episodes keep weight 1; the new data gets the same total weight.
+
+| Checkpoint | Seeds 0–29 | Seeds 1000–1029 | Total (baseline 314/360) |
+|---|---|---|---|
+| 2 500 steps | 152/180 | 152/180 | 304/360 |
+| 5 000 steps | 148/180 | 158/180 | 306/360 |
+
+No gain. The critic explains only 50 % of the variance of the return on unseen episodes, so the advantages are noisy:
+frames of successful episodes get a mean weight of 2.10, frames of failed ones still 1.33. With such a weak contrast
+the method is close to self-imitation on all roll-outs, exploration noise included, and it ends where
+self-imitation ended (308 and 304). One round with one setting of the temperature and the horizon was tried.
+
+Across all reward-only attempts the pattern is the same: the reward says that an episode went badly, not what to do
+instead, and the exploration available here (noise, random pushes, fixed escape motions) rarely produces the
+re-aiming motion in a form the camera policy can learn. Teacher labels on exactly those states did.
 
 ## Limitations
 
