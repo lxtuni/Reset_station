@@ -32,6 +32,8 @@ ap.add_argument("--num_steps", type=int, default=None)     # 去噪迭代次数�
 ap.add_argument("--fp32", action="store_true")            # 把模型转成 32 位小数再跑（导出 ONNX 时必须这样做，这里验证成功率不受影响）
 ap.add_argument("--backend", default="torch")              # torch / trt
 ap.add_argument("--engine", default=None)                  # TensorRT 引擎文件（去噪次数在导出时已固定）
+ap.add_argument("--commit", type=int, default=0)           # 自适应执行：预测的动作块开头明显上抬时，连续执行这么多步再重新推理（0 = 关）
+ap.add_argument("--commit_z", type=float, default=0.4)     # “明显上抬”的门槛：动作块前 4 步的上下分量的平均值
 ap.add_argument("--csv", default=None)
 ap.add_argument("--json", default=None)
 args = ap.parse_args()
@@ -107,6 +109,7 @@ lat_est = float(np.mean([a + b_ + c for a, b_, c in zip(T["pre"][1:], T["infer"]
 for v in T.values():
     v.clear()
 K = []                                                      # 每次推理对应的延迟步数
+CM = []                                                     # 每次推理是否触发了“连续执行”
 
 
 def delay_steps():
@@ -126,7 +129,9 @@ def run(v_range, n, seed0):
             if not queue or early:
                 acts, ms = infer(*cams(), joints(env))
                 lat_est = 0.9 * lat_est + 0.1 * ms          # 推理耗时的滑动平均
-                acts = acts[:args.exec_steps]; K.append(k)
+                go = bool(args.commit and float(np.mean(acts[:4, 2])) > args.commit_z)
+                CM.append(go)
+                acts = acts[:args.commit if go else args.exec_steps]; K.append(k)
                 if early:
                     queue = queue + list(acts[k:])          # 旧块剩下的 k 步先执行，新块跳过已过时的前 k 步
                 else:
@@ -155,6 +160,8 @@ lat = np.array(T["infer"])
 print(f"合计成功率 {tot_s}/{tot_n} = {tot_s / tot_n * 100:.1f}%  exec_steps={args.exec_steps} delay={args.delay} "
       f"async={int(args.async_exec)} num_steps={policy.config.num_steps} backend={args.backend} fp32={int(args.fp32)} "
       f"平均延迟步数={np.mean(K):.2f}")
+if args.commit:
+    print(f"自适应执行：门槛 {args.commit_z}，连续 {args.commit} 步；{len(CM)} 次推理里触发 {int(np.sum(CM))} 次（{np.mean(CM) * 100:.1f}%）")
 print(f"时间分解（每次推理）：前处理 {m['pre']:.1f} ms | 网络推理 {m['infer']:.1f} ms (p95 {np.percentile(lat, 95):.1f}) | "
       f"后处理 {m['post']:.1f} ms | 合计 {sum(m.values()):.1f} ms，控制周期 {STEP_MS} ms")
 if args.csv:

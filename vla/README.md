@@ -269,6 +269,64 @@ frames of successful episodes get a mean weight of 2.10, frames of failed ones s
 the method is close to self-imitation on all roll-outs, exploration noise included, and it ends where
 self-imitation ended (308 and 304). One round with one setting of the temperature and the horizon was tried.
 
+### State-triggered branching search and distillation (reward only)
+
+The earlier attempts each lacked one of three things: the right action in the data, a label that is tied to what
+the cameras show, or a learning signal that separates a good action from an easy episode. `collect_branch.py`
+tries to supply all three without the teacher:
+
+- The branch point is a state, not a time step: the gripper is not holding the mast and its distance to the mast
+  has not shrunk by 5 mm for 12 steps (distance from the simulator, used during collection only). In a pilot this
+  fired in 27 of 27 failed episodes and in 14 of 93 successful ones.
+- Five escape motions are tried from the same branch point and the fastest successful one is kept.
+- The comparison is paired: same seed, same branch point, policy alone against policy plus escape. A segment is
+  kept only if a failure became a success or a success became at least 20 steps faster.
+
+Replays turned out not to be fully deterministic with six processes sharing the GPU (13 % of unchanged replays ended
+differently), so every search is preceded by a control replay (seeds whose outcome changes on its own are skipped)
+and every accepted escape is replayed once more (9 % did not hold up and were dropped).
+
+2 400 episodes gave 261 segments (17 816 frames); about 40 % of the failures could be turned into successes. The
+segments start at the branch point and were sampled with weight 2 against the 820 earlier episodes.
+
+| | Seeds 0–29 | Seeds 1000–1029 | Total (baseline 314/360) |
+|---|---|---|---|
+| 2 500 steps | 137/180 | 143/180 | 280/360 |
+| 5 000 steps | 157/180 | 156/180 | 313/360 |
+
+No gain at the setting used everywhere else (re-plan every step). The same two checkpoints with more steps executed
+per plan:
+
+| Steps executed per plan | Baseline | After branching search | Difference |
+|---|---|---|---|
+| 1 | 314/360 | 313/360 | −1 |
+| 2 | 295/360 | 304/360 | +9 |
+| 4 | 265/360 | 278/360 | +13 |
+| 8 | 208/360 | 228/360 | +20 |
+
+The difference grows with the number of committed steps. Each row alone is within the noise of the evaluation;
+pooled over the three lower rows it is about two standard errors. One reading: the model has learned part of the
+escape as a chunk, but when it re-plans every step the 8-step escape has to be chosen again at every step against
+far more data that says "approach", and it is not sustained. Another reading that these numbers cannot exclude: the
+model has simply become more tolerant of open-loop execution because it was trained on its own roll-outs. Either
+way, executing more steps per plan costs far more than it returns here, so the result at the operating point stands.
+
+A last test of the first reading: re-plan every step, except when the first four steps of the predicted chunk point
+clearly upwards, then execute eight steps before re-planning (`eval_vla.py --commit 8 --commit_z`).
+
+| Threshold on the upward component | Share of plans committed | Baseline | After branching search |
+|---|---|---|---|
+| 0.3 | 8–9 % | 291/360 | 304/360 |
+| 0.5 | 4 % | 303/360 | 309/360 |
+
+Both models commit equally often, so the rule fires mostly on ordinary upward motion and not on a learned escape,
+and neither model reaches the 314/360 of plain per-step re-planning. The new model is again slightly ahead of the
+baseline (+13, +6), again inside the noise.
+
+Why the teacher labels worked where this did not: the teacher labels every frame of a stuck episode with one
+coherent strategy, about 130 frames per episode. The search adds an 8-step motion from a different strategy, about
+2 100 new frames in total, and the rest of each segment is the policy's own behaviour, which teaches nothing new.
+
 Across all reward-only attempts the pattern is the same: the reward says that an episode went badly, not what to do
 instead, and the exploration available here (noise, random pushes, fixed escape motions) rarely produces the
 re-aiming motion in a form the camera policy can learn. Teacher labels on exactly those states did.
